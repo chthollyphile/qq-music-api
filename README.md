@@ -206,6 +206,22 @@ docker pull qq-music-api
 - [x] 获取票务信息
 - [x] 获取歌单详情
 - [x] 获取歌手列表
+- [x] QQ 音乐原生扫码登录、登录状态和用户歌单 **2026-08-04**
+
+### QQ 音乐原生扫码登录
+
+服务提供与网易云接口形状兼容的扫码流程：
+
+1. `GET /login/qr/key` 取得 `data.unikey`。
+2. `GET /login/qr/create?key=<unikey>` 取得 `data.qrimg`（PNG data URL）。
+3. 轮询 `GET /login/qr/check?key=<unikey>`；状态码为 `801` 等待、`802` 已扫码、`803` 成功、`800` 过期或失败。
+4. 成功后调用 `GET /login/status`、`GET /user/detail`、`GET /user/playlist`；`GET /logout` 清除登录态。
+
+凭证只保存在服务端短期内存中。`qr/check` 返回和设置的 cookie 是随机 opaque session ID，不包含 QQ 的 `musickey` 或 `musicid`。服务限制同一时间只有一个 QR，并在失败后通过 `Retry-After` 提示退避。Node 18 的 MQTT WebSocket 由最小 `ws` runtime dependency 提供，不需要升级 Docker runtime，也不需要二维码生成套件。
+
+2026-08-04 已完成一次正式 service 的真实扫码验收：`801 waiting → 802 scanned → credential exchange → 803 confirmed`，随后 `GetLoginUserInfo` 返回 HTTP 200 / code 0。实测 QIMEI 外层 `data` 仍是 JSON 字符串，解析后 `q16` / `q36` 均存在；同日修复了 `GetSession.data.session.uid` 可能为数字而不是字符串的兼容问题。
+
+如果更新代码后仍看到 `QIMEI response missing q16/q36`，请先重启 Node 进程或重建容器。诊断时只记录外层／内层 code、`data` 类型及 `q16` / `q36` 的类型和长度，不要输出原值。服务重启会清除全部 QR 与登录 session，客户端需要重新扫码。
 
 ### 使用文档
 
@@ -240,7 +256,7 @@ docker pull qq-music-api
 ### 项目不足
 
 1. 当前已补充基础 `unit test` 与接口测试，但整体覆盖率和复杂场景用例仍有继续提升空间。
-2. 登录、获取个人信息等依赖登录态的接口能力仍未完善。
+2. 登录态目前只保存在单进程内存中；服务重启后需要重新扫码。
 
 ### 🤖 AI 代理 (Agents)
 

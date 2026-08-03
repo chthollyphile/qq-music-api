@@ -1257,3 +1257,45 @@ songs: [
 示例截图:
 
 ![获取票务信息](https://raw.githubusercontent.com/Rain120/qq-music-api/master/screenshot/getTicketInfo.png)
+
+### QQ 音乐原生扫码登录
+
+扫码登录使用 QQ 音乐 App 扫描上游直接返回的 PNG，不需要服务器生成二维码。
+
+| 接口 | 参数 | 返回 |
+| --- | --- | --- |
+| `/login/qr/key` | 无 | `data.unikey`，短期 QR 工作阶段 key |
+| `/login/qr/create` | `key` | `data.qrimg`，`data:image/png;base64,...` |
+| `/login/qr/check` | `key` | `800` 过期/失败、`801` 等待、`802` 已扫描、`803` 已确认 |
+| `/login/status` | cookie（浏览器自动携带） | `data.profile`；未登录时 `data` 为空 |
+| `/user/detail` | cookie | 当前用户信息 |
+| `/user/playlist` | 可选 `uid`、cookie | 自建和收藏歌单 |
+| `/logout` | cookie | 清除短期内存登录态 |
+
+`qr/check` 成功时会设置 HttpOnly `qqmusic_session`，并在响应的 `cookie` 字段返回同一个 opaque session 值，供跨来源 transport 保存。该值不包含 QQ 音乐凭证；`musickey`、MQTT token 和 Android 装置上下文不会写入一般日志或响应。用户资料中的账号 ID 只会作为 profile 字段返回。
+
+服务只允许一个并行 QR。上游拒绝（包括安全数字码 `50006`）会保留为 `upstreamCode`，并返回 `retryAfterMs` / `Retry-After`，调用方应等待后重新出码。
+
+#### 实际验收与故障诊断
+
+2026-08-04 使用正式 auth service 完成真实扫码：`801 waiting → 802 scanned → 803 confirmed`；credential exchange 与 `GetLoginUserInfo` 均返回 HTTP 200 / code 0。测试账号返回了有效 profile，但上游昵称字段为空，调用方不应把昵称当作登录成功的唯一判断条件。
+
+本次 QIMEI 实际响应的安全结构如下，原值不得写入日志：
+
+```json
+{
+  "code": 0,
+  "data": "<JSON string>",
+  "parsedData": {
+    "code": 0,
+    "data": {
+      "q16": "<string, length 36>",
+      "q36": "<string, length 36>"
+    }
+  }
+}
+```
+
+因此 `QIMEI response missing q16/q36` 不是这次实测中的上游格式变更。若更新后仍出现该错误，先确认运行中的 Node／Docker 已重启，再用上述结构化摘要检查外层与内层响应。不要记录 QIMEI、完整响应 body、QR ID、cookie、token 或 Android 装置值。
+
+`GetSession.data.session.uid` 在真实响应中可能是数字，service 会将数字或字符串正规化为内部字符串；不要恢复为只接受字符串的解析方式。所有 auth session 都只存在单进程内存，服务重启、水平扩容或请求落到另一个实例时不会共享登录态。
