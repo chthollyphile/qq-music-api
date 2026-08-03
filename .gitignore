@@ -7,4 +7,5 @@ node_modules
 
 .vscode
 coverage/
+test-results/
 .trae/specs
