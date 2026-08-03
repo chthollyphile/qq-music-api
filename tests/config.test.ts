@@ -51,6 +51,9 @@ describe('ConfigManager', () => {
         loginUin: '123456',
         cookie: 'secret_cookie_value',
         uin: '123456',
+        musicid: 123456,
+        str_musicid: '123456',
+        musickey: 'secret_music_key',
         cookieList: ['secret_cookie_value'],
         cookieObject: { key: 'value' },
       },
@@ -62,10 +65,16 @@ describe('ConfigManager', () => {
       cookieList?: string[];
       cookieObject?: Record<string, string>;
       loginUin?: string;
+      musicid?: string;
+      str_musicid?: string;
+      musickey?: string;
     };
     expect(user.cookie).toBe('*** MASKED ***');
     expect(user.cookieList).toContain('*** MASKED ***');
     expect(user.cookieObject).toHaveProperty('***', 'MASKED');
     expect(user.loginUin).toBe('123456'); // Non-sensitive fields should remain intact
+    expect(user.musicid).toBe('*** MASKED ***');
+    expect(user.str_musicid).toBe('*** MASKED ***');
+    expect(user.musickey).toBe('*** MASKED ***');
   });
 });

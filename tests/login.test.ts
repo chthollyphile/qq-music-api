@@ -1,0 +1,161 @@
+const mockQrLoginService = {
+  createSession: jest.fn(),
+  createQr: jest.fn(),
+  checkQr: jest.fn(),
+  getLoginStatus: jest.fn(),
+  getUserDetail: jest.fn(),
+  getUserPlaylists: jest.fn(),
+  logout: jest.fn(),
+};
+
+jest.mock('../src/services/auth/qrLogin', () => {
+  const actual = jest.requireActual('../src/services/auth/qrLogin');
+  return {
+    ...actual,
+    __esModule: true,
+    default: mockQrLoginService,
+    qrLoginService: mockQrLoginService,
+  };
+});
+
+import request from 'supertest';
+import app from '../src/app';
+import { QrLoginServiceError } from '../src/services/auth/qrLogin';
+import { logger } from '../src/util/logger';
+
+const server = app.callback();
+
+describe('QQ login controllers', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockQrLoginService.createSession.mockResolvedValue('qr-key');
+    mockQrLoginService.createQr.mockResolvedValue('data:image/png;base64,fixture');
+    mockQrLoginService.checkQr.mockReturnValue({ code: 801, message: 'Waiting for QR scan' });
+    mockQrLoginService.getLoginStatus.mockResolvedValue(null);
+    mockQrLoginService.getUserDetail.mockResolvedValue(null);
+    mockQrLoginService.getUserPlaylists.mockResolvedValue(null);
+  });
+
+  it('should create a QR key and image with provider-compatible response fields', async () => {
+    const keyResponse = await request(server).get('/login/qr/key');
+    const imageResponse = await request(server).get('/login/qr/create').query({ key: 'qr-key' });
+
+    expect(keyResponse.status).toBe(200);
+    expect(keyResponse.body).toEqual({ code: 200, data: { unikey: 'qr-key' } });
+    expect(imageResponse.body).toEqual({
+      code: 200,
+      data: { qrimg: 'data:image/png;base64,fixture' },
+    });
+  });
+
+  it('should reject QR create and check requests without a key', async () => {
+    const createResponse = await request(server).get('/login/qr/create');
+    const checkResponse = await request(server).get('/login/qr/check');
+
+    expect(createResponse.status).toBe(400);
+    expect(checkResponse.status).toBe(400);
+    expect(createResponse.body).toMatchObject({ code: 400 });
+    expect(checkResponse.body).toMatchObject({ code: 400 });
+  });
+
+  it('should return Retry-After when QR creation is backed off', async () => {
+    mockQrLoginService.createSession.mockRejectedValue(
+      new QrLoginServiceError('backed off', 429, 31000),
+    );
+
+    const response = await request(server).get('/login/qr/key');
+
+    expect(response.status).toBe(429);
+    expect(response.headers['retry-after']).toBe('31');
+    expect(response.body).toEqual(expect.objectContaining({ code: 429, retryAfterMs: 31000 }));
+  });
+
+  it('should set an opaque HttpOnly cookie after confirmation and use it for status', async () => {
+    mockQrLoginService.checkQr.mockReturnValue({
+      code: 803,
+      message: 'Authorization login successful',
+      cookie: 'qqmusic_session=opaque-token',
+    });
+    mockQrLoginService.getLoginStatus.mockResolvedValue({ musicid: 123, nickname: '我的 QQ 帳號' });
+    const agent = request.agent(server);
+
+    const checkResponse = await agent.get('/login/qr/check').query({ key: 'qr-key' });
+    const statusResponse = await agent.get('/login/status');
+
+    expect(checkResponse.status).toBe(200);
+    expect(checkResponse.headers['set-cookie'][0]).toContain('qqmusic_session=opaque-token');
+    expect(checkResponse.headers['set-cookie'][0].toLowerCase()).toContain('httponly');
+    expect(statusResponse.body).toEqual({
+      code: 200,
+      data: { profile: { musicid: 123, nickname: '我的 QQ 帳號' } },
+    });
+    expect(mockQrLoginService.getLoginStatus).toHaveBeenCalledWith('opaque-token');
+  });
+
+  it('should accept the opaque cookie query for a cross-origin transport', async () => {
+    mockQrLoginService.getUserDetail.mockResolvedValue({ musicid: 123 });
+
+    const response = await request(server)
+      .get('/user/detail')
+      .query({ cookie: 'qqmusic_session=query-token' });
+
+    expect(response.status).toBe(200);
+    expect(mockQrLoginService.getUserDetail).toHaveBeenCalledWith('query-token');
+  });
+
+  it('should redact QR keys and opaque cookies from all request logs', async () => {
+    const loggerSpy = jest.spyOn(logger, 'info').mockImplementation(() => undefined);
+    mockQrLoginService.checkQr.mockReturnValue({
+      code: 803,
+      message: 'Authorization login successful',
+      cookie: 'qqmusic_session=log-secret-cookie',
+    });
+
+    await request(server).get('/login/qr/check').query({ key: 'log-secret-key' });
+    await request(server)
+      .get('/login/status')
+      .query({ cookie: 'qqmusic_session=log-secret-query' });
+
+    const logged = JSON.stringify(loggerSpy.mock.calls);
+    expect(logged).not.toContain('log-secret-key');
+    expect(logged).not.toContain('log-secret-cookie');
+    expect(logged).not.toContain('log-secret-query');
+    expect(logged).toContain('MASKED');
+    loggerSpy.mockRestore();
+  });
+
+  it('should return unauthenticated status, detail, and playlist responses safely', async () => {
+    const statusResponse = await request(server).get('/login/status');
+    const detailResponse = await request(server).get('/user/detail');
+    const playlistResponse = await request(server).get('/user/playlist');
+
+    expect(statusResponse.body).toEqual({ code: 200, data: {} });
+    expect(detailResponse.status).toBe(401);
+    expect(playlistResponse.status).toBe(401);
+  });
+
+  it('should return authenticated playlists and clear the session on logout', async () => {
+    mockQrLoginService.getUserPlaylists.mockResolvedValue({
+      v_playlist: [{ tid: 7, dirName: '我喜欢' }],
+      total: 1,
+      bFinish: true,
+    });
+
+    const playlistResponse = await request(server)
+      .get('/user/playlist')
+      .query({ cookie: 'qqmusic_session=opaque-token', uid: '123' });
+    const logoutResponse = await request(server)
+      .get('/logout')
+      .query({ cookie: 'qqmusic_session=opaque-token' });
+
+    expect(playlistResponse.body).toEqual({
+      code: 200,
+      playlist: [{ tid: 7, dirName: '我喜欢' }],
+      total: 1,
+      more: false,
+    });
+    expect(mockQrLoginService.getUserPlaylists).toHaveBeenCalledWith('opaque-token', '123');
+    expect(logoutResponse.body).toEqual({ code: 200 });
+    expect(mockQrLoginService.logout).toHaveBeenCalledWith('opaque-token');
+  });
+});

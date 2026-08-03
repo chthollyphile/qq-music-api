@@ -38,6 +38,14 @@ describe('Explorer routes', () => {
             id: 'get-search-by-key',
             path: '/getSearchByKey',
           }),
+          expect.objectContaining({
+            id: 'qr-check',
+            path: '/login/qr/check',
+          }),
+          expect.objectContaining({
+            id: 'get-user-playlist',
+            path: '/user/playlist',
+          }),
         ]),
       }),
     );
