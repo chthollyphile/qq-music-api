@@ -26,6 +26,7 @@ import songListCategories from './songLists/songListCategories';
 import songListDetail from './songLists/songListDetail';
 // song list
 import songLists from './songLists/songLists';
+import getUserPlaylist from './user/getUserPlaylist';
 // UCommon
 import UCommon from './UCommon/UCommon';
 
@@ -60,4 +61,5 @@ export default {
   UCommon,
   // getTopLists
   getTopLists,
+  getUserPlaylist,
 };

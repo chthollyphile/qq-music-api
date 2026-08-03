@@ -46,6 +46,10 @@ export const UserSchema = z.object({
   loginUin: z.string(),
   cookie: z.string(),
   uin: z.string().optional(),
+  musicid: z.union([z.string(), z.number()]).optional(),
+  str_musicid: z.string().optional(),
+  musickey: z.string().optional(),
+  loginType: z.number().optional(),
   cookieList: z.array(z.string()).optional(),
   cookieObject: z.record(z.string(), z.string()).optional(),
 });

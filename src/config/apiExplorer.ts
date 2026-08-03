@@ -81,6 +81,13 @@ export const extractRouteParams = (routePath: string): ApiExplorerField[] => {
 export const apiExplorerBaseRoutes: ApiExplorerBaseRoute[] = [
   { name: 'getCookie', method: 'GET', routePath: '/user/getCookie', category: 'User' },
   { name: 'setCookie', method: 'GET', routePath: '/user/setCookie', category: 'User' },
+  { name: 'qrKey', method: 'GET', routePath: '/login/qr/key', category: 'Login' },
+  { name: 'qrCreate', method: 'GET', routePath: '/login/qr/create', category: 'Login' },
+  { name: 'qrCheck', method: 'GET', routePath: '/login/qr/check', category: 'Login' },
+  { name: 'loginStatus', method: 'GET', routePath: '/login/status', category: 'Login' },
+  { name: 'logout', method: 'GET', routePath: '/logout', category: 'Login' },
+  { name: 'userDetail', method: 'GET', routePath: '/user/detail', category: 'User' },
+  { name: 'getUserPlaylist', method: 'GET', routePath: '/user/playlist', category: 'User' },
   { name: 'getDownloadQQMusic', method: 'GET', routePath: '/downloadQQMusic', category: 'Song' },
   { name: 'getHotkey', method: 'GET', routePath: '/getHotkey', category: 'Search' },
   {
@@ -232,6 +239,50 @@ export const apiExplorerOverrides: Record<string, Partial<ApiExplorerEndpoint>> 
   },
   setCookie: {
     description: 'Attempt to update cookie dynamically. Disabled by default for security.',
+  },
+  qrKey: {
+    description: 'Create one short-lived native QQ Music QR login session.',
+  },
+  qrCreate: {
+    description: 'Create the PNG QR image for an existing login session.',
+    queryParams: [
+      {
+        key: 'key',
+        label: 'QR Key',
+        required: true,
+        description: 'Opaque key returned by /login/qr/key.',
+      },
+    ],
+  },
+  qrCheck: {
+    description: 'Poll QR state: 800 expired, 801 waiting, 802 scanned, or 803 confirmed.',
+    queryParams: [
+      {
+        key: 'key',
+        label: 'QR Key',
+        required: true,
+        description: 'Opaque key returned by /login/qr/key.',
+      },
+    ],
+  },
+  loginStatus: {
+    description: 'Get the authenticated QQ Music profile for the current session.',
+  },
+  logout: {
+    description: 'Clear the current in-memory QQ Music login session.',
+  },
+  userDetail: {
+    description: 'Get the current authenticated QQ Music user detail.',
+  },
+  getUserPlaylist: {
+    description: 'Get created and collected playlists for the authenticated user.',
+    queryParams: [
+      {
+        key: 'uid',
+        label: 'User ID',
+        description: 'Defaults to the authenticated QQ Music account.',
+      },
+    ],
   },
   getDownloadQQMusic: {
     description: 'Get download URL information for QQ Music.',

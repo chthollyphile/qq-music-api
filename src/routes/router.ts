@@ -8,6 +8,15 @@ import context from '../controllers';
 router.get('/user/getCookie', context.getCookie);
 router.get('/user/setCookie', context.setCookie);
 
+// native QQ Music QR login
+router.get('/login/qr/key', context.qrKey);
+router.get('/login/qr/create', context.qrCreate);
+router.get('/login/qr/check', context.qrCheck);
+router.get('/login/status', context.loginStatus);
+router.get('/logout', context.logout);
+router.get('/user/detail', context.userDetail);
+router.get('/user/playlist', context.getUserPlaylist);
+
 // downloadQQMusic
 router.get('/downloadQQMusic', context.getDownloadQQMusic);
 

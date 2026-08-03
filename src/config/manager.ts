@@ -118,6 +118,9 @@ export class ConfigManager {
       user: {
         ...conf.user,
         cookie: conf.user.cookie ? '*** MASKED ***' : '',
+        musicid: conf.user.musicid ? '*** MASKED ***' : undefined,
+        str_musicid: conf.user.str_musicid ? '*** MASKED ***' : undefined,
+        musickey: conf.user.musickey ? '*** MASKED ***' : undefined,
         cookieList: conf.user.cookieList?.length ? ['*** MASKED ***'] : [],
         cookieObject: conf.user.cookieObject ? { '***': 'MASKED' } : {},
       },

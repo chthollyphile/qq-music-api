@@ -32,6 +32,8 @@ import getSongListDetail from './getSongListDetail';
 import getSongLists from './getSongLists';
 import getTicketInfo from './getTicketInfo';
 import getTopLists from './getTopLists';
+import getUserPlaylist from './getUserPlaylist';
+import { loginStatus, logout, qrCheck, qrCreate, qrKey, userDetail } from './login';
 
 const { get: getCookie, set: setCookie } = cookies;
 
@@ -70,4 +72,11 @@ export default {
   getRanks: withControllerLogging('getRanks', getRanks),
   getTicketInfo: withControllerLogging('getTicketInfo', getTicketInfo),
   getImageUrl: withControllerLogging('getImageUrl', getImageUrl),
+  qrKey: withControllerLogging('qrKey', qrKey),
+  qrCreate: withControllerLogging('qrCreate', qrCreate),
+  qrCheck: withControllerLogging('qrCheck', qrCheck),
+  loginStatus: withControllerLogging('loginStatus', loginStatus),
+  logout: withControllerLogging('logout', logout),
+  userDetail: withControllerLogging('userDetail', userDetail),
+  getUserPlaylist: withControllerLogging('getUserPlaylist', getUserPlaylist),
 };

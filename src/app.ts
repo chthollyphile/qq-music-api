@@ -15,6 +15,7 @@ import cors from './middlewares/koa-cors';
 import router from './routes/router';
 import cookie from './util/cookie';
 import { logger, loggerState } from './util/logger';
+import { sanitizeRequestUrl } from './util/observability';
 import { autoOpenExplorer } from './util/openExplorer';
 import './util/colors';
 import pkg from '../package.json';
@@ -126,7 +127,7 @@ app.use(async (ctx: Koa.Context, next: Koa.Next) => {
   const requestStartAt = Date.now();
   await next();
   const rt = ctx.response.get('X-Response-Time');
-  const sanitizedUrl = encodeURI(ctx.url).replace(/%0D|%0A/gi, '');
+  const sanitizedUrl = encodeURI(sanitizeRequestUrl(ctx.url)).replace(/%0D|%0A/gi, '');
 
   if (isExplorerDebugRequest(ctx.path)) {
     logExplorerRequestDebug('request-summary', {
