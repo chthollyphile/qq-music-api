@@ -1298,8 +1298,41 @@ songs: [
 
 因此 `QIMEI response missing q16/q36` 不能直接判断为上游格式变更。更新后应先确认 Node／Docker 已重启，再用上述结构化摘要检查外层与内层响应；但重启并不保证修复。
 
-2026-08-05 的 G3 复验中，正式 service 重启后仍收到 HTTP 200、outer code `-30002`、outer data `undefined`。同环境的独立稳定装置 probe、fresh-device probe，以及 production／probe request builder 与 HTTP client 的 2×2 交叉验证均取得 outer／inner code 0 与长度 36 的 q16／q36，且第一跳没有 redirect。目前最强假设是 `QrLoginServiceImpl` 每次启动创建的 ephemeral Android device context 与可成功的稳定装置流程不同；这仍待验证，`-30002` 只可称为安全数字码，不能自行解释为官方错误定义。
+#### `-30002` 根因：全局 axios 默认值污染（2026-08-05 已修复）
 
-下一步是在 auth service 内提供可注入、可测试且可配置存储位置的 device context repository，并覆盖进程重启重用、QIMEI 非零码、建立 session 前的退避及敏感字段脱敏。不得硬读 probe 的 `test-results`，也不要记录 QIMEI、完整响应 body、QR ID、cookie、token、`musickey`、MQTT token 或 Android 装置值。
+2026-08-05 的 G3 复验中，正式 service 重启后收到 HTTP 200、outer code `-30002`、outer data `undefined`；而同环境的独立 probe（稳定装置与 fresh device）以及 production／probe request builder 与 HTTP client 的 2×2 交叉验证，全部取得 outer／inner code 0 与长度 36 的 q16／q36。差异不在装置、不在请求构造、也不在 HTTP client，而在**进程**：
+
+- `src/util/request.ts` 在 import 时改写全局 `axios.defaults`，其中 `axios.defaults.headers.post['Content-Type']` 被设为 `application/x-www-form-urlencoded;charset=UTF-8;text/plain;`（供既有 y.qq.com／c.y.qq.com service 使用）。
+- `createAuthHttpClient()` 内部的 `axios.create()` 会在**调用当下**快照全局默认值。
+- 于是 auth client 是在该模块之前还是之后建立，纯粹由 `src/app.ts` 的 import 图决定。之后建立时，QIMEI 的 JSON body 被声明为 form-urlencoded，上游返回 HTTP 200、outer code `-30002` 且没有 `data`。
+
+同一进程、同一分钟内用 loopback echo server 复现的对照：
+
+```json
+{"label":"client-created-before-util-request","sent":"application/json"}
+{"label":"client-created-after-util-request","sent":"application/x-www-form-urlencoded;charset=UTF-8;text/plain;"}
+```
+
+这解释了独立 probe 为何总是成功（它从不 import `src/util/request.ts`）、为何重启无效（import 顺序是确定的）、以及为何 2026-08-04 通过而次日不通过（import 图变了）。
+
+**修复在 auth 这一侧**，不改共用的 `src/util/request.ts`：`services/auth/httpClient.ts` 每次请求都自行钉住 `Content-Type: application/json`（仅在带 body 时）与 `responseType: 'json'`，不再继承全局默认值。回归测试 `tests/services.auth-http-client.test.ts` 用 loopback echo server 守住这一点。`-30002` 仍只作为安全数字码保留，不赋予官方错误名称。
+
+#### Android device context 与建立 session 前的退避
+
+`services/auth/deviceContext.ts` 提供可注入、可测试且可配置存储位置的 device context repository：
+
+| 项目 | 行为 |
+| --- | --- |
+| 默认路径 | `.auth-state/qq-device.json`（权限 0600，已 gitignore） |
+| 覆盖路径 | 环境变量 `QQ_AUTH_STATE_PATH` |
+| 关闭持久化 | `QQ_AUTH_STATE_PATH=memory` |
+| 写盘失败 | 降级为进程内上下文，不阻断登录 |
+| 存储内容 | 仅装置识别值与 device session；**不含 `musickey`、MQTT token 或任何用户凭证** |
+
+QIMEI 与 device session 因此跨进程重启复用（重启后日志为 `source: 'restored'` 与 `qimei-result source: 'cache'`，不再重新注册装置）。多实例部署请各自指定 `QQ_AUTH_STATE_PATH`，不要共用同一份装置身份。
+
+建立 QR session 之前的失败（QIMEI 或 GetSession）会套用指数退避：首次返回 502 + `Retry-After`，body 附安全数字码 `upstreamCode`；随后的请求返回 429，避免用户连点打出连续 500 或连续冲击上游。
+
+日志只记录外层／内层 code、数据类型与 q16／q36 长度。不得硬读 probe 的 `test-results`，也不要记录 QIMEI、完整响应 body、QR ID、cookie、token、`musickey`、MQTT token 或 Android 装置值。
 
 `GetSession.data.session.uid` 在真实响应中可能是数字，service 会将数字或字符串正规化为内部字符串；不要恢复为只接受字符串的解析方式。所有 auth session 都只存在单进程内存，服务重启、水平扩容或请求落到另一个实例时不会共享登录态；device context 的安全重用是独立问题，不得借此持久化用户登录凭证。
