@@ -36,6 +36,14 @@ describe('GET /getSongInfo', () => {
     expect(response.body.response.code).toBe(0);
   });
 
+  it('reads songmid and songid from the documented path parameters', async () => {
+    await request(server).get('/getSongInfo/path-mid/42').expect(200);
+
+    const call = mockUCommon.mock.calls.at(-1)?.[0];
+    const payload = JSON.parse(String(call?.params?.data));
+    expect(payload.songinfo.param).toMatchObject({ song_mid: 'path-mid', song_id: '42' });
+  });
+
   it('边界条件: 验证参数为空时的表现', async () => {
     const response = await request(server).get('/getSongInfo');
     expect(response.status).toBe(200);

@@ -11,6 +11,13 @@ export type TypedQuery<T extends object> = {
 export const getTypedQuery = <T extends object>(ctx: Context): TypedQuery<T> =>
   ctx.query as TypedQuery<T>;
 
+export type TypedParams<T extends object> = {
+  [K in keyof T]?: string;
+};
+
+export const getTypedParams = <T extends object>(ctx: Context): TypedParams<T> =>
+  (ctx as Context & { params?: TypedParams<T> }).params ?? {};
+
 /**
  * 基础的服务请求参数抽象
  * 所有 Service 层的方法参数都应该继承此接口

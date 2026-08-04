@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { _guid } from '../../config';
 import { logger } from '../../util/logger';
 import {
   type AndroidDevice,
@@ -104,6 +105,12 @@ export interface QrLoginService {
   getLoginStatus(token?: string): Promise<Dictionary | null>;
   getUserDetail(token?: string): Promise<Dictionary | null>;
   getUserPlaylists(token?: string, uin?: string): Promise<Dictionary | null>;
+  getMusicPlay(
+    token: string | undefined,
+    songmid: string,
+    quality?: string | number,
+    mediaId?: string,
+  ): Promise<Dictionary | null>;
   logout(token?: string): void;
 }
 
@@ -179,6 +186,64 @@ const identifierOf = (value: unknown): string =>
 const numberOf = (value: unknown): number | undefined => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const MUSIC_FILE_TYPES = {
+  m4a: { prefix: 'C400', extension: '.m4a' },
+  128: { prefix: 'M500', extension: '.mp3' },
+  320: { prefix: 'M800', extension: '.mp3' },
+  ape: { prefix: 'A000', extension: '.ape' },
+  flac: { prefix: 'F000', extension: '.flac' },
+} as const;
+
+const getAuthenticatedPlayUrls = async (
+  http: AuthHttpClient,
+  auth: AuthSession,
+  songmid: string,
+  quality: string | number = 128,
+  mediaId?: string,
+): Promise<Dictionary> => {
+  const songmidList = songmid
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const qualityKey = String(quality) as keyof typeof MUSIC_FILE_TYPES;
+  const fileType = MUSIC_FILE_TYPES[qualityKey] ?? MUSIC_FILE_TYPES[128];
+  const guid = _guid ? String(_guid) : '1429839143';
+  const data = await callMusicu(
+    http,
+    auth.device,
+    'get-music-play',
+    'vkey.GetVkeyServer',
+    'CgiGetVkey',
+    {
+      filename: songmidList.map(
+        (mid) => `${fileType.prefix}${mid}${mediaId || mid}${fileType.extension}`,
+      ),
+      guid,
+      songmid: songmidList,
+      songtype: [0],
+      uin: String(auth.credential.musicid),
+      loginflag: 1,
+      platform: '20',
+    },
+    auth.credential,
+  );
+  const sip = Array.isArray(data.sip) ? data.sip.map(stringOf).filter(Boolean) : [];
+  const domain = sip.find((value) => !value.startsWith('http://ws')) ?? sip[0] ?? '';
+  const playUrl: Dictionary = {};
+  const entries = Array.isArray(data.midurlinfo) ? data.midurlinfo : [];
+  for (const entry of entries) {
+    const item = dictionaryOf(entry);
+    const mid = identifierOf(item.songmid);
+    if (!mid) continue;
+    const purl = stringOf(item.purl);
+    playUrl[mid] = {
+      url: purl ? `${domain}${purl}` : '',
+      error: purl ? false : '暂无播放链接',
+    };
+  }
+  return playUrl;
 };
 
 const parseDictionary = (value: unknown): Dictionary => {
@@ -1183,6 +1248,16 @@ class QrLoginServiceImpl implements QrLoginService {
   public async getUserPlaylists(token?: string, uin?: string): Promise<Dictionary | null> {
     const auth = this.authFor(token);
     return auth ? getPlaylists(this.http, auth, uin) : null;
+  }
+
+  public async getMusicPlay(
+    token: string | undefined,
+    songmid: string,
+    quality?: string | number,
+    mediaId?: string,
+  ): Promise<Dictionary | null> {
+    const auth = this.authFor(token);
+    return auth ? getAuthenticatedPlayUrls(this.http, auth, songmid, quality, mediaId) : null;
   }
 
   public logout(token?: string): void {

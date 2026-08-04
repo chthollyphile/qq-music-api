@@ -1015,11 +1015,13 @@ songs: [
 
 - `songmid`: 歌曲`id`, 多个播放链接使用 `,`分隔
 
-- `justPlayUrl`: 仅返回播放链接, 默认是 `play`。`[all | play]`
+- `resType`: 仅返回播放链接, 默认是 `play`。`[all | play]`
 
 - `quality`: 播放品质, 默认是 128。`[m4a | 128 | 320 | ape | flac]`
 
-接口地址: `/getMusicPlay`
+- `mediaId`: 可选。使用歌曲详情中的 `file.media_mid`；当它与 `songmid` 不同时，QQ vkey filename 需要同时包含两者。
+
+接口地址: `/getMusicPlay/:songmid`（仍兼容旧的 `?songmid=` query）
 
 调用例子:
 
@@ -1027,25 +1029,27 @@ songs: [
 
 #### 获取单个播放链接
 
-例子: `/songmid=0025NhlN2yWrP4`
+例子: `/getMusicPlay/0025NhlN2yWrP4`
 
 ![获取单个播放链接](https://raw.githubusercontent.com/Rain120/qq-music-api/master/screenshot/getMusicPlay.png)
 
 #### 获取多个播放链接
 
-例子: `/songmid=001yNIo41SJjuC,001wPuVc4ZiMhj&resType=play`
+例子: `/getMusicPlay/001yNIo41SJjuC,001wPuVc4ZiMhj?resType=play`
 
 ![获取多个歌曲播放链接](https://raw.githubusercontent.com/Rain120/qq-music-api/master/screenshot/just-get-play-url.png)
 
 #### 获取多个播放链接
 
-例子: `/songmid=001yNIo41SJjuC,001wPuVc4ZiMhj&resType=all`
+例子: `/getMusicPlay/001yNIo41SJjuC,001wPuVc4ZiMhj?resType=all`
 
 ![获取接口所有数据](https://raw.githubusercontent.com/Rain120/qq-music-api/master/screenshot/get-play-all-data.png)
 
 #### 歌曲品质
 
-例子: `songmid=001yNIo41SJjuC&resType=play&quality=m4a`
+例子: `/getMusicPlay/001yNIo41SJjuC?resType=play&quality=m4a`
+
+扫码登录后，该接口会优先使用当前 `qqmusic_session` 对应的登录凭证取得音源。同源浏览器自动携带 HttpOnly cookie；跨来源 transport 可传 `cookie=qqmusic_session%3D<opaque-token>`，但不得记录或分享含该参数的完整 URL。没有 opaque session 时仍保留既有 legacy 行为。
 
 ![song-quality-128.png](https://raw.githubusercontent.com/Rain120/qq-music-api/master/screenshot/song-quality-128.png)
 
@@ -1270,15 +1274,20 @@ songs: [
 | `/login/status` | cookie（浏览器自动携带） | `data.profile`；未登录时 `data` 为空 |
 | `/user/detail` | cookie | 当前用户信息 |
 | `/user/playlist` | 可选 `uid`、cookie | 自建和收藏歌单 |
+| `/getMusicPlay/:songmid` | `quality`、cookie | 使用当前扫码登录态取得播放链接 |
 | `/logout` | cookie | 清除短期内存登录态 |
 
 `qr/check` 成功时会设置 HttpOnly `qqmusic_session`，并在响应的 `cookie` 字段返回同一个 opaque session 值，供跨来源 transport 保存。该值不包含 QQ 音乐凭证；`musickey`、MQTT token 和 Android 装置上下文不会写入一般日志或响应。用户资料中的账号 ID 只会作为 profile 字段返回。
+
+登录态播放沿用 auth 专用 `createAuthHttpClient` 调用 `musicu.fcg`，不会自行建立 axios client，也不会依赖或修改共用 `src/util/request.ts` 的全局 defaults。
 
 服务只允许一个并行 QR。上游拒绝（包括安全数字码 `50006`）会保留为 `upstreamCode`，并返回 `retryAfterMs` / `Retry-After`，调用方应等待后重新出码。
 
 #### 实际验收与故障诊断
 
 2026-08-04 使用正式 auth service 完成真实扫码：`801 waiting → 802 scanned → 803 confirmed`；credential exchange 与 `GetLoginUserInfo` 均返回 HTTP 200 / code 0。测试账号返回了有效 profile，但上游昵称字段为空，调用方不应把昵称当作登录成功的唯一判断条件。
+
+2026-08-05 的 G4 已确认：QQ Match Data 搜索正常、可用音源可以播放／快进／暂停，自动 QRC 歌词正常。部分歌曲的 320 → 128 fallback 均收到 HTTP 200、global code 0、module code 0，但 `purl` 为空；QQ 响应没有提供会员、地区或版权原因，因此服务只能描述为「上游未提供播放 URL」，不能把它命名为下架，也不能在会员与 IP 限制之间做确定判断。若需进一步排查，只收脱敏 response body；不得分享 `qqmusic_session`、完整音源 URL、curl 或 HAR。
 
 本次 QIMEI 实际响应的安全结构如下，原值不得写入日志：
 

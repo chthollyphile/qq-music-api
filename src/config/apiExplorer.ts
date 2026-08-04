@@ -396,7 +396,8 @@ export const apiExplorerOverrides: Record<string, Partial<ApiExplorerEndpoint>> 
     ],
   },
   getMusicPlay: {
-    description: 'Get playable music URL by song MID.',
+    description:
+      'Get playable music URL by song MID; an opaque QR session enables authenticated playback.',
   },
   getAlbumInfo: {
     id: 'get-album-info',

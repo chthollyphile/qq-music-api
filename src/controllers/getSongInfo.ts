@@ -5,10 +5,18 @@ const { UCommon } = services;
 // songmid=001CLC7W2Gpz4J
 import { Context } from 'koa';
 import { commonParams } from '../config';
+import { getTypedParams, getTypedQuery } from '../types/core/request';
+
+interface SongInfoParams {
+  songmid?: string;
+  songid?: string;
+}
 
 export default async (ctx: Context) => {
-  const song_mid = (ctx.query as Record<string, unknown>).songmid;
-  const song_id = (ctx.query as Record<string, unknown>).songid || '';
+  const path = getTypedParams<SongInfoParams>(ctx);
+  const query = getTypedQuery<SongInfoParams>(ctx);
+  const song_mid = path.songmid ?? query.songmid;
+  const song_id = path.songid ?? query.songid ?? '';
 
   const params = Object.assign({}, commonParams, {
     format: 'json',

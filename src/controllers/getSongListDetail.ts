@@ -11,9 +11,16 @@ const { songListDetail } = services;
  * @return:
  */
 import { Context } from 'koa';
+import { getTypedParams, getTypedQuery } from '../types/core/request';
+
+interface SongListDetailParams {
+  disstid?: string;
+}
 
 export default async (ctx: Context) => {
-  const { disstid } = ctx.query;
+  const path = getTypedParams<SongListDetailParams>(ctx);
+  const query = getTypedQuery<SongListDetailParams>(ctx);
+  const disstid = path.disstid ?? query.disstid;
   const props = {
     method: 'get',
     params: {

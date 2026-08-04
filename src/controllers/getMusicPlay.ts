@@ -7,14 +7,50 @@ const { UCommon } = services;
 import { Context } from 'koa';
 import get from 'lodash.get';
 import { _guid, userInfo } from '../config';
+import qrLoginService from '../services/auth/qrLogin';
+import { getTypedParams, getTypedQuery } from '../types/core/request';
+import { getAuthToken } from './login';
+
+interface MusicPlayParams {
+  songmid?: string;
+  quality?: string;
+  mediaId?: string;
+  resType?: string;
+}
 
 export default async (ctx: Context) => {
+  const path = getTypedParams<MusicPlayParams>(ctx);
+  const query = getTypedQuery<MusicPlayParams>(ctx);
+  const songmid = String(path.songmid ?? query.songmid ?? '').trim();
+  if (!songmid) {
+    ctx.status = 400;
+    ctx.body = {
+      data: {
+        message: 'no songmid',
+      },
+    };
+    return;
+  }
+
   const uin = userInfo.uin || '0';
-  const songmid = `${(ctx.query as Record<string, unknown>).songmid}`;
   // response data only need play url value (all play)
-  const justPlayUrl = ((ctx.query as Record<string, unknown>).resType || 'play') === 'play';
+  const justPlayUrl = (query.resType || 'play') === 'play';
   const guid = _guid ? `${_guid}` : '1429839143';
-  const { quality = 128, mediaId } = ctx.query;
+  const quality = query.quality ?? '128';
+  const mediaId = query.mediaId;
+  const authToken = getAuthToken(ctx);
+  if (authToken) {
+    const playUrl = await qrLoginService.getMusicPlay(authToken, songmid, quality, mediaId);
+    if (!playUrl) {
+      ctx.status = 401;
+      ctx.body = { code: 401, message: 'Login required' };
+      return;
+    }
+    ctx.status = 200;
+    ctx.body = { data: { playUrl } };
+    return;
+  }
+
   const fileType = {
     m4a: {
       s: 'C400',
@@ -39,7 +75,7 @@ export default async (ctx: Context) => {
   };
   const songmidList = songmid.split(',');
   const qualityKey = quality as keyof typeof fileType;
-  const fileInfo = fileType[qualityKey];
+  const fileInfo = fileType[qualityKey] ?? fileType[128];
   const file = songmidList.map((_) => `${fileInfo.s}${_}${mediaId || _}${fileInfo.e}`);
   const data = {
     // req: {
@@ -83,37 +119,28 @@ export default async (ctx: Context) => {
     option: {},
   };
 
-  if (songmid) {
-    await UCommon(props)
-      .then((res: { data: any }) => {
-        const response = res.data;
-        const domain =
-          get(response, 'req_0.data.sip', []).find((i: string) => !i.startsWith('http://ws')) ||
-          get(response, 'req_0.data.sip[0]');
+  await UCommon(props)
+    .then((res: { data: any }) => {
+      const response = res.data;
+      const domain =
+        get(response, 'req_0.data.sip', []).find((i: string) => !i.startsWith('http://ws')) ||
+        get(response, 'req_0.data.sip[0]');
 
-        const playUrl: Record<string, { url: string; error: string | boolean }> = {};
-        get(response, 'req_0.data.midurlinfo', []).forEach(
-          (item: { songmid: string; purl: string }) => {
-            playUrl[item.songmid] = {
-              url: item.purl ? `${domain}${item.purl}` : '',
-              error: !item.purl && '暂无播放链接',
-            };
-          },
-        );
-        response.playUrl = playUrl;
-        ctx.body = {
-          data: justPlayUrl ? { playUrl } : response,
-        };
-      })
-      .catch((error: unknown) => {
-        throw error;
-      });
-  } else {
-    ctx.status = 400;
-    ctx.body = {
-      data: {
-        message: 'no songmid',
-      },
-    };
-  }
+      const playUrl: Record<string, { url: string; error: string | boolean }> = {};
+      get(response, 'req_0.data.midurlinfo', []).forEach(
+        (item: { songmid: string; purl: string }) => {
+          playUrl[item.songmid] = {
+            url: item.purl ? `${domain}${item.purl}` : '',
+            error: !item.purl && '暂无播放链接',
+          };
+        },
+      );
+      response.playUrl = playUrl;
+      ctx.body = {
+        data: justPlayUrl ? { playUrl } : response,
+      };
+    })
+    .catch((error: unknown) => {
+      throw error;
+    });
 };

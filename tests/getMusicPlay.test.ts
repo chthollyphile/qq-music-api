@@ -1,21 +1,57 @@
+const mockUCommon = jest.fn();
+const mockGetMusicPlay = jest.fn();
+
+jest.mock('../src/services', () => {
+  const actual = jest.requireActual('../src/services');
+  return {
+    __esModule: true,
+    default: { ...actual.default, UCommon: mockUCommon },
+  };
+});
+
+jest.mock('../src/services/auth/qrLogin', () => {
+  const actual = jest.requireActual('../src/services/auth/qrLogin');
+  return {
+    ...actual,
+    __esModule: true,
+    default: { getMusicPlay: mockGetMusicPlay },
+  };
+});
+
 import request from 'supertest';
 import app from '../src/app';
 
 const server = app.callback();
 
 describe('GET /getMusicPlay', () => {
-  it('正常流程: 验证接口能否正确返回业务数据', async () => {
-    const response = await request(server).get('/getMusicPlay');
-    expect([200, 400, 404, 500]).toContain(response.status);
+  beforeEach(() => {
+    mockUCommon.mockReset();
+    mockGetMusicPlay.mockReset();
+    mockGetMusicPlay.mockResolvedValue({
+      'song-mid': { url: 'https://audio.example.test/song.flac', error: false },
+    });
   });
 
-  it('边界条件: 验证参数为空时的表现', async () => {
-    const response = await request(server).get('/getMusicPlay?limit=0&page=-1');
-    expect([200, 400, 404, 500]).toContain(response.status);
+  it('uses path songmid and the opaque session for authenticated playback', async () => {
+    const response = await request(server).get(
+      '/getMusicPlay/song-mid?quality=flac&cookie=qqmusic_session%3Dopaque-token',
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({
+      data: {
+        playUrl: {
+          'song-mid': { url: 'https://audio.example.test/song.flac', error: false },
+        },
+      },
+    });
+    expect(mockGetMusicPlay).toHaveBeenCalledWith('opaque-token', 'song-mid', 'flac', undefined);
+    expect(mockUCommon).not.toHaveBeenCalled();
   });
 
-  it('异常输入: 传入非法参数', async () => {
-    const response = await request(server).get('/getMusicPlay?id=invalid_!@#');
-    expect([200, 400, 404, 500]).toContain(response.status);
+  it('rejects a request without a path or query songmid', async () => {
+    await request(server).get('/getMusicPlay').expect(400);
+    expect(mockGetMusicPlay).not.toHaveBeenCalled();
+    expect(mockUCommon).not.toHaveBeenCalled();
   });
 });

@@ -101,6 +101,20 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
         },
       } as T);
     }
+    if (method === 'CgiGetVkey') {
+      const param = dictionaryOf(dictionaryOf(dictionaryOf(payload).req_0).param);
+      const songmid = Array.isArray(param.songmid) ? String(param.songmid[0] ?? '') : '';
+      return response({
+        code: 0,
+        req_0: {
+          code: 0,
+          data: {
+            sip: ['https://audio.example.test/'],
+            midurlinfo: [{ songmid, purl: 'fixture.flac' }],
+          },
+        },
+      } as T);
+    }
     throw new Error(`Unexpected method: ${method}`);
   });
   const http: AuthHttpClient = {
@@ -129,6 +143,7 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
   return {
     calls,
     comms,
+    httpPost: post,
     deviceRepository,
     service,
     emit: (event: TestQrEvent) => {
@@ -231,6 +246,29 @@ describe('QQ native QR login service', () => {
     });
     expect(harness.calls).toContain('GetLoginUserInfo');
     expect(harness.calls).toContain('GetPlaylistByUin');
+  });
+
+  it('should resolve music URLs through the authenticated auth HTTP client', async () => {
+    const harness = createProtocolHarness();
+    const { result } = await login(harness.service, harness.emit);
+    const token = result.cookie?.split('=')[1];
+
+    await expect(
+      harness.service.getMusicPlay(token, 'song-mid', 'flac', 'media-mid'),
+    ).resolves.toEqual({
+      'song-mid': { url: 'https://audio.example.test/fixture.flac', error: false },
+    });
+    await expect(harness.service.getMusicPlay('unknown', 'song-mid', 'flac')).resolves.toBeNull();
+    expect(harness.calls).toContain('CgiGetVkey');
+    expect(harness.comms.at(-1)).toMatchObject({
+      qq: '123',
+      authst: 'credential-key',
+      tmeLoginType: 6,
+    });
+    const vkeyPayload = dictionaryOf(
+      dictionaryOf(dictionaryOf(jest.mocked(harness.httpPost).mock.calls.at(-1)?.[1])).req_0,
+    );
+    expect(dictionaryOf(vkeyPayload.param).filename).toEqual(['F000song-midmedia-mid.flac']);
   });
 
   it('should clear auth and close QR listeners on logout', async () => {
