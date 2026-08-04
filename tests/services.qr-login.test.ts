@@ -1,15 +1,23 @@
 import type { AxiosInstance, AxiosRequestConfig, AxiosResponse } from 'axios';
+import {
+  createMemoryDeviceContextRepository,
+  type DeviceContextRepository,
+} from '../src/services/auth/deviceContext';
 import createAuthHttpClient, { type AuthHttpClient } from '../src/services/auth/httpClient';
 import {
   createQrLoginService,
   type QrLoginService,
   QrLoginServiceError,
 } from '../src/services/auth/qrLogin';
+import { logger } from '../src/util/logger';
 
 interface TestQrEvent {
   type: string;
   payload: unknown;
 }
+
+const QIMEI_16 = 'q'.repeat(36);
+const QIMEI_36 = 'r'.repeat(36);
 
 const response = <T>(
   data: T,
@@ -29,14 +37,27 @@ const dictionaryOf = (value: unknown): Record<string, unknown> =>
 const methodOf = (payload: unknown): string =>
   String(dictionaryOf(dictionaryOf(payload).req_0).method ?? '');
 
-const createProtocolHarness = (options: { failCredential?: boolean } = {}) => {
+interface HarnessOptions {
+  failCredential?: boolean;
+  deviceRepository?: DeviceContextRepository;
+  qimei?: () => AxiosResponse<unknown>;
+}
+
+const createProtocolHarness = (options: HarnessOptions = {}) => {
+  const deviceRepository = options.deviceRepository ?? createMemoryDeviceContextRepository();
   const calls: string[] = [];
+  const comms: Record<string, unknown>[] = [];
   const post = jest.fn(async <T>(_url: string, payload?: unknown): Promise<AxiosResponse<T>> => {
     if (!dictionaryOf(payload).req_0) {
-      return response({ data: JSON.stringify({ data: { q16: 'q16', q36: 'q36' } }) } as T);
+      calls.push('GetQimei');
+      if (options.qimei) return options.qimei() as AxiosResponse<T>;
+      return response({
+        data: JSON.stringify({ code: 0, data: { q16: QIMEI_16, q36: QIMEI_36 } }),
+      } as T);
     }
     const method = methodOf(payload);
     calls.push(method);
+    comms.push(dictionaryOf(dictionaryOf(payload).comm));
     if (method === 'GetSession') {
       return response({
         code: 0,
@@ -91,6 +112,7 @@ const createProtocolHarness = (options: { failCredential?: boolean } = {}) => {
   let closed = false;
   const service = createQrLoginService({
     http,
+    deviceRepository,
     randomBytes: (size) => Buffer.alloc(size, 7),
     listen: (_qrcodeId, onEvent) => {
       emit = onEvent;
@@ -106,6 +128,8 @@ const createProtocolHarness = (options: { failCredential?: boolean } = {}) => {
   });
   return {
     calls,
+    comms,
+    deviceRepository,
     service,
     emit: (event: TestQrEvent) => {
       if (!emit) throw new Error('listener not started');
@@ -218,6 +242,92 @@ describe('QQ native QR login service', () => {
 
     await expect(harness.service.getLoginStatus(token)).resolves.toBeNull();
     expect(harness.wasClosed()).toBe(true);
+  });
+
+  it('should reuse the stored device context after a service restart', async () => {
+    const deviceRepository = createMemoryDeviceContextRepository();
+    const first = createProtocolHarness({ deviceRepository });
+    await first.service.createSession();
+    const stored = deviceRepository.load();
+
+    const restarted = createProtocolHarness({ deviceRepository });
+    await restarted.service.createSession();
+
+    expect(first.calls).toContain('GetQimei');
+    expect(restarted.calls).not.toContain('GetQimei');
+    expect(restarted.calls).toContain('GetSession');
+    expect(stored).toMatchObject({ qimei: QIMEI_16, qimei36: QIMEI_36, sessionSid: 'session-sid' });
+    expect(restarted.comms[0]).toMatchObject({
+      QIMEI: QIMEI_16,
+      QIMEI36: QIMEI_36,
+      aid: stored?.androidId,
+      OpenUDID: stored?.openUdid,
+      uid: '1234567890',
+    });
+  });
+
+  it('should persist a valid q16/q36 bootstrap without storing login credentials', async () => {
+    const harness = createProtocolHarness();
+    await login(harness.service, harness.emit);
+
+    const stored = harness.deviceRepository.load();
+
+    expect(stored?.qimei).toHaveLength(36);
+    expect(stored?.qimei36).toHaveLength(36);
+    expect(stored?.qimeiSavedAt).toEqual(expect.any(Number));
+    const serialized = JSON.stringify(stored);
+    for (const secret of ['credential-key', 'mqtt-key', 'must-not-leak'])
+      expect(serialized).not.toContain(secret);
+  });
+
+  it('should back off on a non-zero QIMEI code instead of repeating upstream calls', async () => {
+    const harness = createProtocolHarness({
+      qimei: () => response({ code: -30002, data: undefined }),
+    });
+
+    const failure = await harness.service.createSession().catch((error: unknown) => error);
+    const repeated = await harness.service.createSession().catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(QrLoginServiceError);
+    expect(failure).toEqual(
+      expect.objectContaining({ httpStatus: 502, retryAfterMs: 30000, upstreamCode: -30002 }),
+    );
+    expect(repeated).toEqual(expect.objectContaining({ httpStatus: 429 }));
+    expect(harness.calls).toEqual(['GetQimei']);
+    expect(harness.deviceRepository.load()?.qimei).toBeUndefined();
+  });
+
+  it('should keep QIMEI, credentials, and device identifiers out of the logs', async () => {
+    const spies = (['info', 'warn', 'error'] as const).map((level) =>
+      jest.spyOn(logger, level).mockImplementation(() => undefined),
+    );
+    try {
+      const harness = createProtocolHarness();
+      const { result } = await login(harness.service, harness.emit);
+      const device = harness.deviceRepository.load();
+      const failing = createProtocolHarness({
+        qimei: () => response({ code: -30002, data: undefined }),
+      });
+      await failing.service.createSession().catch(() => undefined);
+
+      const logged = JSON.stringify(spies.map((spy) => spy.mock.calls));
+      for (const secret of [
+        QIMEI_16,
+        QIMEI_36,
+        'credential-key',
+        'mqtt-key',
+        'must-not-leak',
+        'qr-id',
+        String(result.cookie),
+        String(device?.androidId),
+        String(device?.imei),
+        String(device?.openUdid),
+      ])
+        expect(logged).not.toContain(secret);
+      expect(logged).toContain('-30002');
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
   });
 
   it('should translate timeout and unknown keys to expired code 800', async () => {
