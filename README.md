@@ -221,7 +221,9 @@ docker pull qq-music-api
 
 2026-08-04 已完成一次正式 service 的真实扫码验收：`801 waiting → 802 scanned → credential exchange → 803 confirmed`，随后 `GetLoginUserInfo` 返回 HTTP 200 / code 0。实测 QIMEI 外层 `data` 仍是 JSON 字符串，解析后 `q16` / `q36` 均存在；同日修复了 `GetSession.data.session.uid` 可能为数字而不是字符串的兼容问题。
 
-如果更新代码后仍看到 `QIMEI response missing q16/q36`，请先重启 Node 进程或重建容器。诊断时只记录外层／内层 code、`data` 类型及 `q16` / `q36` 的类型和长度，不要输出原值。服务重启会清除全部 QR 与登录 session，客户端需要重新扫码。
+更新 auth 代码后仍须先重启 Node 进程或重建容器，但重启不一定能解决 `QIMEI response missing q16/q36`。2026-08-05 的 G3 复验中，正式 service 重启后仍收到 HTTP 200、outer code `-30002`、outer data `undefined`；同环境的独立稳定装置 probe、fresh-device probe，以及 production／probe request builder 与 HTTP client 的 2×2 交叉验证均能取得 outer／inner code 0 和长度 36 的 q16／q36，第一跳也没有 redirect。目前问题收敛在 `QrLoginServiceImpl` 的 ephemeral Android device context 建立／重用生命周期；这是待验证假设，`-30002` 只保留为安全数字码，不赋予官方错误名称。
+
+后续修正应使用可注入、可测试且可配置存储位置的 device context repository，覆盖进程重启重用、QIMEI 非零码、建立 session 前的退避，以及日志／响应不泄漏识别值。不得硬读 probe 的 `test-results` 或记录 QIMEI、完整响应 body、QR ID、cookie、token、`musickey`、MQTT token、Android 装置值。服务重启仍会清除全部 QR 与登录 session，客户端需要重新扫码。
 
 ### 使用文档
 
@@ -256,7 +258,7 @@ docker pull qq-music-api
 ### 项目不足
 
 1. 当前已补充基础 `unit test` 与接口测试，但整体覆盖率和复杂场景用例仍有继续提升空间。
-2. 登录态目前只保存在单进程内存中；服务重启后需要重新扫码。
+2. 登录态目前只保存在单进程内存中；服务重启后需要重新扫码。Android device context 的安全重用仍是 G3 阻塞项，不等同于持久化用户登录凭证。
 
 ### 🤖 AI 代理 (Agents)
 

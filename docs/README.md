@@ -1296,6 +1296,10 @@ songs: [
 }
 ```
 
-因此 `QIMEI response missing q16/q36` 不是这次实测中的上游格式变更。若更新后仍出现该错误，先确认运行中的 Node／Docker 已重启，再用上述结构化摘要检查外层与内层响应。不要记录 QIMEI、完整响应 body、QR ID、cookie、token 或 Android 装置值。
+因此 `QIMEI response missing q16/q36` 不能直接判断为上游格式变更。更新后应先确认 Node／Docker 已重启，再用上述结构化摘要检查外层与内层响应；但重启并不保证修复。
 
-`GetSession.data.session.uid` 在真实响应中可能是数字，service 会将数字或字符串正规化为内部字符串；不要恢复为只接受字符串的解析方式。所有 auth session 都只存在单进程内存，服务重启、水平扩容或请求落到另一个实例时不会共享登录态。
+2026-08-05 的 G3 复验中，正式 service 重启后仍收到 HTTP 200、outer code `-30002`、outer data `undefined`。同环境的独立稳定装置 probe、fresh-device probe，以及 production／probe request builder 与 HTTP client 的 2×2 交叉验证均取得 outer／inner code 0 与长度 36 的 q16／q36，且第一跳没有 redirect。目前最强假设是 `QrLoginServiceImpl` 每次启动创建的 ephemeral Android device context 与可成功的稳定装置流程不同；这仍待验证，`-30002` 只可称为安全数字码，不能自行解释为官方错误定义。
+
+下一步是在 auth service 内提供可注入、可测试且可配置存储位置的 device context repository，并覆盖进程重启重用、QIMEI 非零码、建立 session 前的退避及敏感字段脱敏。不得硬读 probe 的 `test-results`，也不要记录 QIMEI、完整响应 body、QR ID、cookie、token、`musickey`、MQTT token 或 Android 装置值。
+
+`GetSession.data.session.uid` 在真实响应中可能是数字，service 会将数字或字符串正规化为内部字符串；不要恢复为只接受字符串的解析方式。所有 auth session 都只存在单进程内存，服务重启、水平扩容或请求落到另一个实例时不会共享登录态；device context 的安全重用是独立问题，不得借此持久化用户登录凭证。
