@@ -1,5 +1,12 @@
 import crypto from 'node:crypto';
 import { logger } from '../../util/logger';
+import {
+  type AndroidDevice,
+  createDefaultDeviceContextRepository,
+  createDeviceContextStore,
+  type DeviceContextRepository,
+  type DeviceContextStore,
+} from './deviceContext';
 import createAuthHttpClient, { type AuthHttpClient } from './httpClient';
 
 const WebSocketRuntime = require('ws') as WebSocketConstructor;
@@ -18,6 +25,7 @@ const MQTT_HOST = 'mu.y.qq.com';
 const MQTT_INITIAL_PATH = '/ws/handshake';
 const QR_TTL_MS = 3 * 60 * 1000;
 const AUTH_TTL_MS = 24 * 60 * 60 * 1000;
+const QIMEI_TTL_MS = 24 * 60 * 60 * 1000;
 const BACKOFF_BASE_MS = 30 * 1000;
 const BACKOFF_MAX_MS = 15 * 60 * 1000;
 
@@ -36,28 +44,6 @@ export interface QqCredential extends Dictionary {
   musicid: string | number;
   musickey: string;
   loginType: number;
-}
-
-interface AndroidDevice extends Dictionary {
-  display: string;
-  product: string;
-  device: string;
-  board: string;
-  model: string;
-  fingerprint: string;
-  procVersion: string;
-  imei: string;
-  brand: string;
-  androidId: string;
-  openUdid: string;
-  osRelease: string;
-  sdk: number;
-  qimei?: string;
-  qimei36?: string;
-  qimeiSavedAt?: number;
-  sessionUid?: string;
-  sessionSid?: string;
-  sessionVkey?: unknown;
 }
 
 interface QrEvent {
@@ -93,6 +79,7 @@ interface AuthSession {
 
 interface QrLoginDependencies {
   http?: AuthHttpClient;
+  deviceRepository?: DeviceContextRepository;
   listen?: (
     qrcodeId: string,
     onEvent: (event: QrEvent) => void,
@@ -142,9 +129,27 @@ export class QrLoginServiceError extends Error {
     message: string,
     public readonly httpStatus: number,
     public readonly retryAfterMs?: number,
+    public readonly upstreamCode?: number,
   ) {
     super(message);
     this.name = 'QrLoginServiceError';
+  }
+}
+
+/**
+ * QIMEI bootstrap rejection. Only the upstream numeric codes are carried; they are opaque
+ * security codes and must never be renamed into an official error meaning.
+ */
+export class QqDeviceBootstrapError extends Error {
+  public constructor(
+    public readonly httpStatus: number,
+    public readonly outerCode: number | undefined,
+    public readonly innerCode: number | undefined,
+  ) {
+    super(
+      `QIMEI bootstrap failed (HTTP ${httpStatus}, outer=${outerCode ?? 'unknown'}, inner=${innerCode ?? 'unknown'})`,
+    );
+    this.name = 'QqDeviceBootstrapError';
   }
 }
 
@@ -203,34 +208,6 @@ const randomDigits = (length: number): string => {
   for (let index = 0; index < length; index += 1) value += crypto.randomInt(0, 10);
   return value;
 };
-
-const randomImei = (): string => {
-  const digits = randomDigits(14).split('').map(Number);
-  let sum = 0;
-  for (let index = 0; index < digits.length; index += 1) {
-    let digit = digits[index];
-    if (index % 2 === 1) digit = digit * 2 > 9 ? digit * 2 - 9 : digit * 2;
-    sum += digit;
-  }
-  digits.push((10 - (sum % 10)) % 10);
-  return digits.join('');
-};
-
-const createDevice = (): AndroidDevice => ({
-  display: `QMAPI.${randomDigits(6)}.001`,
-  product: 'iarim',
-  device: 'sagit',
-  board: 'eomam',
-  model: 'MI 6',
-  fingerprint: `xiaomi/iarim/sagit:10/eomam.200122.001/${randomDigits(7)}:user/release-keys`,
-  procVersion: `Linux 5.4.0-54-generic-${randomHex(8)} (android-build@google.com)`,
-  imei: randomImei(),
-  brand: 'Xiaomi',
-  androidId: randomHex(16),
-  openUdid: randomHex(32),
-  osRelease: '10',
-  sdk: 29,
-});
 
 const randomBeaconId = (now = new Date()): string => {
   const month = `${now.toISOString().slice(0, 7)}-01`;
@@ -726,14 +703,25 @@ const buildQimeiHeadersAndBody = (
   return { headers, body: dictionaryOf(request.body) };
 };
 
+/**
+ * Reuses the stored QIMEI while it is fresh and returns whether the device context changed.
+ * Diagnostics stay at code/type/length granularity: raw bodies and identifiers never leave
+ * this function.
+ */
 const ensureQimei = async (
   http: AuthHttpClient,
   device: AndroidDevice,
   now: number,
-): Promise<void> => {
+): Promise<boolean> => {
   const fresh =
-    device.qimei && device.qimei36 && device.qimeiSavedAt && now - device.qimeiSavedAt < 86400000;
-  if (fresh) return;
+    device.qimei &&
+    device.qimei36 &&
+    device.qimeiSavedAt &&
+    now - device.qimeiSavedAt < QIMEI_TTL_MS;
+  if (fresh) {
+    logger.info('qq-auth.qimei-result', { source: 'cache' });
+    return false;
+  }
   const request = buildQimeiHeadersAndBody(device);
   const response = await http.post<unknown>(QIMEI_URL, request.body, { headers: request.headers });
   const outer = parseDictionary(response.data);
@@ -741,10 +729,22 @@ const ensureQimei = async (
   const data = dictionaryOf(inner.data);
   const qimei = stringOf(data.q16);
   const qimei36 = stringOf(data.q36);
-  if (!qimei || !qimei36) throw new Error('QIMEI response missing q16/q36');
+  const outerCode = numberOf(outer.code);
+  const innerCode = numberOf(inner.code);
+  logger.info('qq-auth.qimei-result', {
+    source: 'upstream',
+    httpStatus: response.status,
+    outerCode,
+    outerDataType: typeof outer.data,
+    innerCode,
+    q16Length: qimei.length,
+    q36Length: qimei36.length,
+  });
+  if (!qimei || !qimei36) throw new QqDeviceBootstrapError(response.status, outerCode, innerCode);
   device.qimei = qimei;
   device.qimei36 = qimei36;
   device.qimeiSavedAt = now;
+  return true;
 };
 
 const callMusicu = async (
@@ -940,7 +940,7 @@ class QrLoginServiceImpl implements QrLoginService {
   private readonly random: (size: number) => Buffer;
   private readonly qrSessions = new Map<string, QrSession>();
   private readonly authSessions = new Map<string, AuthSession>();
-  private readonly device = createDevice();
+  private readonly deviceStore: DeviceContextStore;
   private creatingSession = false;
   private failureCount = 0;
   private nextQrAllowedAt = 0;
@@ -950,6 +950,9 @@ class QrLoginServiceImpl implements QrLoginService {
     this.listen = dependencies.listen ?? defaultListen;
     this.now = dependencies.now ?? Date.now;
     this.random = dependencies.randomBytes ?? crypto.randomBytes;
+    this.deviceStore = createDeviceContextStore(
+      dependencies.deviceRepository ?? createDefaultDeviceContextRepository(),
+    );
   }
 
   private cleanup(): void {
@@ -988,6 +991,27 @@ class QrLoginServiceImpl implements QrLoginService {
     return token ? (this.authSessions.get(token) ?? null) : null;
   }
 
+  /**
+   * Turns a pre-session bootstrap failure into a backed-off client error, so repeated clicks
+   * get one 502 with Retry-After and then 429s instead of a stream of upstream calls.
+   */
+  private failBootstrap(error: unknown): QrLoginServiceError {
+    if (error instanceof QrLoginServiceError) return error;
+    const bootstrap = error instanceof QqDeviceBootstrapError ? error : null;
+    const protocol = error instanceof QqProtocolError ? error : null;
+    const retryAfterMs = this.backoff();
+    const upstreamCode = bootstrap?.outerCode ?? protocol?.upstreamCode;
+    logger.warn('qq-auth.bootstrap-failed', {
+      phase: bootstrap ? 'qimei' : (protocol?.phase ?? 'unknown'),
+      outerCode: bootstrap?.outerCode,
+      innerCode: bootstrap?.innerCode,
+      upstreamCode: protocol?.upstreamCode,
+      retryAfterMs,
+      name: error instanceof Error ? error.name : 'Error',
+    });
+    return new QrLoginServiceError('Unable to start QR login', 502, retryAfterMs, upstreamCode);
+  }
+
   private failSession(session: QrSession, error: unknown): void {
     if (terminalState(session.state)) return;
     const protocol = error instanceof QqProtocolError ? error : null;
@@ -1008,11 +1032,12 @@ class QrLoginServiceImpl implements QrLoginService {
     if (!musicid || !mqttToken || !session.qrcodeId)
       throw new Error('MQTT cookies missing login credential');
     session.state = 'exchanging';
+    const device = this.deviceStore.get();
     let credential: QqCredential;
     try {
       credential = await exchangeCredential(
         this.http,
-        this.device,
+        device,
         session.qrcodeId,
         musicid,
         mqttToken,
@@ -1022,7 +1047,7 @@ class QrLoginServiceImpl implements QrLoginService {
       await getLoginUser(this.http, {
         token: '',
         credential: direct,
-        device: this.device,
+        device,
         expiresAt: 0,
       });
       credential = direct;
@@ -1034,7 +1059,7 @@ class QrLoginServiceImpl implements QrLoginService {
     this.authSessions.set(token, {
       token,
       credential,
-      device: this.device,
+      device,
       expiresAt: this.now() + AUTH_TTL_MS,
     });
     session.authToken = token;
@@ -1070,8 +1095,10 @@ class QrLoginServiceImpl implements QrLoginService {
       throw new QrLoginServiceError('Another QR login is already active', 409);
     this.creatingSession = true;
     try {
-      await ensureQimei(this.http, this.device, this.now());
-      await refreshAndroidSession(this.http, this.device);
+      const device = this.deviceStore.get();
+      if (await ensureQimei(this.http, device, this.now())) this.deviceStore.persist();
+      await refreshAndroidSession(this.http, device);
+      this.deviceStore.persist();
       const key = this.random(24).toString('hex');
       this.qrSessions.set(key, {
         key,
@@ -1080,6 +1107,8 @@ class QrLoginServiceImpl implements QrLoginService {
         expiresAt: this.now() + QR_TTL_MS,
       });
       return key;
+    } catch (error) {
+      throw this.failBootstrap(error);
     } finally {
       this.creatingSession = false;
     }
@@ -1092,7 +1121,7 @@ class QrLoginServiceImpl implements QrLoginService {
       throw new QrLoginServiceError('QR session cannot create another code', 409);
     session.state = 'creating';
     try {
-      const qr = await createNativeQr(this.http, this.device);
+      const qr = await createNativeQr(this.http, this.deviceStore.get());
       session.qrcodeId = qr.qrcodeId;
       session.imageUrl = qr.imageUrl;
       if (qr.expiresIn && qr.expiresIn > 0) {

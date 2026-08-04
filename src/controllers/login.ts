@@ -28,7 +28,13 @@ const setServiceError = (ctx: Context, error: unknown): void => {
   if (error instanceof QrLoginServiceError) {
     ctx.status = error.httpStatus;
     if (error.retryAfterMs) ctx.set('Retry-After', String(Math.ceil(error.retryAfterMs / 1000)));
-    ctx.body = { code: error.httpStatus, message: error.message, retryAfterMs: error.retryAfterMs };
+    // upstreamCode stays an opaque upstream number; it is never renamed into an official meaning.
+    ctx.body = {
+      code: error.httpStatus,
+      message: error.message,
+      retryAfterMs: error.retryAfterMs,
+      ...(error.upstreamCode === undefined ? {} : { upstreamCode: error.upstreamCode }),
+    };
     return;
   }
   throw error;

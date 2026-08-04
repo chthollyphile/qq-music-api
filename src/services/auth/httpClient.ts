@@ -7,6 +7,7 @@ import axios, {
 
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 const MAX_REDIRECTS = 3;
+const JSON_CONTENT_TYPE = 'application/json';
 
 export interface AuthHttpClient {
   getCookieHeader(): string;
@@ -49,9 +50,19 @@ export const createAuthHttpClient = (
     let config = { ...initial };
     for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
       const cookies = cookieHeader(jar);
+      // `src/util/request.ts` mutates the GLOBAL axios defaults (POST Content-Type,
+      // responseType) for the legacy y.qq.com/c.y.qq.com services, and `axios.create()`
+      // snapshots those defaults when it runs. Whether that module is imported before or
+      // after this client is built is an import-order accident, so the auth protocol pins
+      // its own JSON contract per request instead of inheriting whatever is global.
       const response = await transport.request<T>({
         ...config,
-        headers: { ...config.headers, ...(cookies ? { Cookie: cookies } : {}) },
+        headers: {
+          ...(config.data === undefined ? {} : { 'Content-Type': JSON_CONTENT_TYPE }),
+          ...config.headers,
+          ...(cookies ? { Cookie: cookies } : {}),
+        },
+        responseType: 'json',
         maxRedirects: 0,
         validateStatus: (status) => status >= 200 && status < 400,
       });

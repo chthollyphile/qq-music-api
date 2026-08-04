@@ -9,3 +9,5 @@ node_modules
 coverage/
 test-results/
 .trae/specs
+# QQ 原生扫码登录的 Android device context（含 QIMEI 等装置识别值，不得提交）
+.auth-state/
