@@ -48,6 +48,24 @@ describe('QQ login controllers', () => {
     });
   });
 
+  it('should pass an explicit login channel through and default to the App channel', async () => {
+    const wechatResponse = await request(server).get('/login/qr/key').query({ channel: 'wechat' });
+    const defaultResponse = await request(server).get('/login/qr/key');
+
+    expect(wechatResponse.status).toBe(200);
+    expect(defaultResponse.status).toBe(200);
+    expect(mockQrLoginService.createSession).toHaveBeenNthCalledWith(1, 'wechat');
+    expect(mockQrLoginService.createSession).toHaveBeenNthCalledWith(2, 'mobile');
+  });
+
+  it('should reject a login channel that is not routable', async () => {
+    const response = await request(server).get('/login/qr/key').query({ channel: 'telepathy' });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({ code: 400 });
+    expect(mockQrLoginService.createSession).not.toHaveBeenCalled();
+  });
+
   it('should reject QR create and check requests without a key', async () => {
     const createResponse = await request(server).get('/login/qr/create');
     const checkResponse = await request(server).get('/login/qr/check');

@@ -1,4 +1,5 @@
 import http from 'node:http';
+import axios from 'axios';
 import createAuthHttpClient from '../src/services/auth/httpClient';
 
 // Runs the real axios stack over loopback. `src/util/request.ts` mutates the global axios
@@ -69,6 +70,40 @@ describe('QQ auth HTTP client global default isolation', () => {
       await createAuthHttpClient().request({ url: echo.url, method: 'GET' });
 
       expect(echo.received[0].contentType).toBeUndefined();
+    } finally {
+      await echo.close();
+    }
+  });
+
+  // The web login channels (WeChat / QQ OAuth) answer with HTML and script text, so callers
+  // must be able to ask for `text`. That opt-in must not become an inherited default: the same
+  // global-defaults accident that broke the QIMEI body would otherwise silently un-parse every
+  // musicu response.
+  it('should parse JSON by default even when the global axios default says otherwise', async () => {
+    const echo = await startEchoServer();
+    const globalResponseType = axios.defaults.responseType;
+    axios.defaults.responseType = 'text';
+    try {
+      const response = await createAuthHttpClient().post<{ ok: boolean }>(echo.url, { app: 0 });
+
+      expect(response.data).toEqual({ ok: true });
+    } finally {
+      axios.defaults.responseType = globalResponseType;
+      await echo.close();
+    }
+  });
+
+  it('should return the raw body only when the caller asks for text explicitly', async () => {
+    const echo = await startEchoServer();
+    try {
+      const response = await createAuthHttpClient().request<string>({
+        url: echo.url,
+        method: 'GET',
+        responseType: 'text',
+      });
+
+      expect(typeof response.data).toBe('string');
+      expect(response.data).toBe('{"ok":true}');
     } finally {
       await echo.close();
     }

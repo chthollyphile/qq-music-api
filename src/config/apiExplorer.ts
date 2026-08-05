@@ -242,6 +242,13 @@ export const apiExplorerOverrides: Record<string, Partial<ApiExplorerEndpoint>> 
   },
   qrKey: {
     description: 'Create one short-lived native QQ Music QR login session.',
+    queryParams: [
+      {
+        key: 'channel',
+        label: 'Login Channel',
+        description: 'mobile (QQ Music App QR, default) or wechat (WeChat QR).',
+      },
+    ],
   },
   qrCreate: {
     description: 'Create the PNG QR image for an existing login session.',

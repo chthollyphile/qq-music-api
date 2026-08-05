@@ -9,6 +9,13 @@ import {
   type DeviceContextStore,
 } from './deviceContext';
 import createAuthHttpClient, { type AuthHttpClient } from './httpClient';
+import {
+  createWechatQr,
+  createWechatQrListener,
+  WECHAT_APP_ID,
+  WECHAT_LOGIN_TYPE,
+  WechatQrError,
+} from './wechatLogin';
 
 const WebSocketRuntime = require('ws') as WebSocketConstructor;
 
@@ -31,6 +38,18 @@ const BACKOFF_BASE_MS = 30 * 1000;
 const BACKOFF_MAX_MS = 15 * 60 * 1000;
 
 type Dictionary = Record<string, unknown>;
+/**
+ * Login channels. `mobile` is the QQ Music App QR (MQTT over WSS, `tmeLoginType: 6`) and stays
+ * the default so the public contract is unchanged for callers that do not ask for a channel.
+ * `qq` is declared but not routable yet; `SUPPORTED_LOGIN_CHANNELS` is the authority.
+ */
+export type QrLoginChannel = 'mobile' | 'wechat' | 'qq';
+export const DEFAULT_LOGIN_CHANNEL: QrLoginChannel = 'mobile';
+export const SUPPORTED_LOGIN_CHANNELS: readonly QrLoginChannel[] = ['mobile', 'wechat'];
+
+export const isSupportedLoginChannel = (value: unknown): value is QrLoginChannel =>
+  SUPPORTED_LOGIN_CHANNELS.includes(value as QrLoginChannel);
+
 type QrState =
   | 'created'
   | 'creating'
@@ -47,12 +66,12 @@ export interface QqCredential extends Dictionary {
   loginType: number;
 }
 
-interface QrEvent {
+export interface QrEvent {
   type: string | null;
   payload: unknown;
 }
 
-interface QrEventListener {
+export interface QrEventListener {
   ready: Promise<void>;
   done: Promise<void>;
   close(): void;
@@ -60,12 +79,22 @@ interface QrEventListener {
 
 interface QrSession {
   key: string;
+  channel: QrLoginChannel;
   state: QrState;
   createdAt: number;
   expiresAt: number;
+  /** Channel-agnostic QR handle: the App `qrcodeID`, or the WeChat `uuid`. */
+  identifier?: string;
+  /** App channel only; kept as-is because it is the `qrCodeID` exchange parameter. */
   qrcodeId?: string;
   imageUrl?: string;
   listener?: QrEventListener;
+  /**
+   * Web login channels hop across weixin.qq.com / qq.com carrying cookies. Sharing the musicu
+   * jar would cross-contaminate both, so those channels get a client per QR session that dies
+   * with the session. The App channel keeps using the shared client.
+   */
+  http?: AuthHttpClient;
   authToken?: string;
   upstreamCode?: number;
   retryAfterMs?: number;
@@ -80,6 +109,8 @@ interface AuthSession {
 
 interface QrLoginDependencies {
   http?: AuthHttpClient;
+  /** Builds the per-QR-session client used by the web login channels. */
+  createSessionHttp?: () => AuthHttpClient;
   deviceRepository?: DeviceContextRepository;
   listen?: (
     qrcodeId: string,
@@ -87,6 +118,7 @@ interface QrLoginDependencies {
     timeoutMs: number,
   ) => QrEventListener;
   now?: () => number;
+  sleep?: (ms: number) => Promise<void>;
   randomBytes?: (size: number) => Buffer;
 }
 
@@ -99,7 +131,7 @@ export interface QrCheckResult {
 }
 
 export interface QrLoginService {
-  createSession(): Promise<string>;
+  createSession(channel?: QrLoginChannel): Promise<string>;
   createQr(key: string): Promise<string>;
   checkQr(key: string): QrCheckResult;
   getLoginStatus(token?: string): Promise<Dictionary | null>;
@@ -899,7 +931,9 @@ const createNativeQr = async (http: AuthHttpClient, device: AndroidDevice) => {
   };
 };
 
-const credentialFrom = (value: Dictionary): QqCredential => {
+const MOBILE_LOGIN_TYPE = 6;
+
+const credentialFrom = (value: Dictionary, defaultLoginType: number): QqCredential => {
   const musicid = value.musicid ?? value.str_musicid;
   const musickey = stringOf(value.musickey);
   if ((!stringOf(musicid) && typeof musicid !== 'number') || !musickey)
@@ -908,7 +942,9 @@ const credentialFrom = (value: Dictionary): QqCredential => {
     ...value,
     musicid: musicid as string | number,
     musickey,
-    loginType: numberOf(value.loginType) ?? 6,
+    // The channel that produced the credential is the fallback, never a fixed 6: a WeChat
+    // credential sent back with `tmeLoginType: 6` would be rejected on every later request.
+    loginType: numberOf(value.loginType) ?? defaultLoginType,
   };
 };
 
@@ -949,8 +985,33 @@ const exchangeCredential = async (
       'Login',
       { musicid: Number(musicid), qrCodeID: qrcodeId, token },
       undefined,
-      { tmeLoginType: 6 },
+      { tmeLoginType: MOBILE_LOGIN_TYPE },
     ),
+    MOBILE_LOGIN_TYPE,
+  );
+
+/**
+ * WeChat channel exchange: the OAuth `code` from the web flow, not an MQTT token. It runs on
+ * the shared device-bound client because it is a musicu call and needs the Android comm; the
+ * WeChat endpoints themselves never see that device context.
+ */
+const exchangeWechatCredential = async (
+  http: AuthHttpClient,
+  device: AndroidDevice,
+  code: string,
+): Promise<QqCredential> =>
+  credentialFrom(
+    await callMusicu(
+      http,
+      device,
+      'credential-exchange',
+      'music.login.LoginServer',
+      'Login',
+      { code, strAppid: WECHAT_APP_ID },
+      undefined,
+      { tmeLoginType: WECHAT_LOGIN_TYPE },
+    ),
+    WECHAT_LOGIN_TYPE,
   );
 
 const getLoginUser = async (http: AuthHttpClient, auth: AuthSession): Promise<Dictionary> =>
@@ -992,6 +1053,13 @@ const getPlaylists = async (
 const terminalState = (state: QrState): boolean =>
   ['confirmed', 'expired', 'failed'].includes(state);
 
+/** Keeps whatever opaque number the upstream gave us, whichever channel produced the failure. */
+const upstreamCodeOf = (error: unknown): number | undefined => {
+  if (error instanceof QqProtocolError) return error.upstreamCode;
+  if (error instanceof WechatQrError) return error.upstreamCode;
+  return undefined;
+};
+
 type QrListenerFactory = (
   qrcodeId: string,
   onEvent: (event: QrEvent) => void,
@@ -1000,8 +1068,10 @@ type QrListenerFactory = (
 
 class QrLoginServiceImpl implements QrLoginService {
   private readonly http: AuthHttpClient;
+  private readonly createSessionHttp: () => AuthHttpClient;
   private readonly listen: QrListenerFactory;
   private readonly now: () => number;
+  private readonly sleep: (ms: number) => Promise<void>;
   private readonly random: (size: number) => Buffer;
   private readonly qrSessions = new Map<string, QrSession>();
   private readonly authSessions = new Map<string, AuthSession>();
@@ -1012,8 +1082,10 @@ class QrLoginServiceImpl implements QrLoginService {
 
   public constructor(dependencies: QrLoginDependencies) {
     this.http = dependencies.http ?? createAuthHttpClient();
+    this.createSessionHttp = dependencies.createSessionHttp ?? createAuthHttpClient;
     this.listen = dependencies.listen ?? defaultListen;
     this.now = dependencies.now ?? Date.now;
+    this.sleep = dependencies.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.random = dependencies.randomBytes ?? crypto.randomBytes;
     this.deviceStore = createDeviceContextStore(
       dependencies.deviceRepository ?? createDefaultDeviceContextRepository(),
@@ -1079,18 +1151,19 @@ class QrLoginServiceImpl implements QrLoginService {
 
   private failSession(session: QrSession, error: unknown): void {
     if (terminalState(session.state)) return;
-    const protocol = error instanceof QqProtocolError ? error : null;
     session.state = 'failed';
-    session.upstreamCode = protocol?.upstreamCode;
+    session.upstreamCode = upstreamCodeOf(error);
     session.retryAfterMs = this.backoff();
     logger.warn('qq-auth.session-failed', {
+      loginChannel: session.channel,
       upstreamCode: session.upstreamCode,
       retryAfterMs: session.retryAfterMs,
       name: error instanceof Error ? error.name : 'Error',
     });
   }
 
-  private async finalizeLogin(session: QrSession, payload: unknown): Promise<void> {
+  /** App channel: the MQTT payload carries an exchange token, never the final credential. */
+  private async exchangeMobileLogin(session: QrSession, payload: unknown): Promise<QqCredential> {
     const cookies = dictionaryOf(dictionaryOf(payload).cookies);
     const musicid = stringOf(dictionaryOf(cookies.qqmusic_uin).value);
     const mqttToken = stringOf(dictionaryOf(cookies.qqmusic_key).value);
@@ -1098,33 +1171,46 @@ class QrLoginServiceImpl implements QrLoginService {
       throw new Error('MQTT cookies missing login credential');
     session.state = 'exchanging';
     const device = this.deviceStore.get();
-    let credential: QqCredential;
     try {
-      credential = await exchangeCredential(
-        this.http,
-        device,
-        session.qrcodeId,
-        musicid,
-        mqttToken,
-      );
+      return await exchangeCredential(this.http, device, session.qrcodeId, musicid, mqttToken);
     } catch (error) {
-      const direct = { musicid, str_musicid: musicid, musickey: mqttToken, loginType: 6 };
+      const direct = {
+        musicid,
+        str_musicid: musicid,
+        musickey: mqttToken,
+        loginType: MOBILE_LOGIN_TYPE,
+      };
       await getLoginUser(this.http, {
         token: '',
         credential: direct,
         device,
         expiresAt: 0,
       });
-      credential = direct;
       logger.warn('qq-auth.exchange-fallback', {
         upstreamCode: error instanceof QqProtocolError ? error.upstreamCode : undefined,
       });
+      return direct;
     }
+  }
+
+  /** WeChat channel: the web flow yields an OAuth code, and there is no MQTT fallback. */
+  private async exchangeWechatLogin(session: QrSession, payload: unknown): Promise<QqCredential> {
+    const code = stringOf(dictionaryOf(payload).code);
+    if (!code) throw new WechatQrError('WeChat authorization missing code');
+    session.state = 'exchanging';
+    return exchangeWechatCredential(this.http, this.deviceStore.get(), code);
+  }
+
+  private async finalizeLogin(session: QrSession, payload: unknown): Promise<void> {
+    const credential =
+      session.channel === 'wechat'
+        ? await this.exchangeWechatLogin(session, payload)
+        : await this.exchangeMobileLogin(session, payload);
     const token = this.random(32).toString('hex');
     this.authSessions.set(token, {
       token,
       credential,
-      device,
+      device: this.deviceStore.get(),
       expiresAt: this.now() + AUTH_TTL_MS,
     });
     session.authToken = token;
@@ -1132,7 +1218,10 @@ class QrLoginServiceImpl implements QrLoginService {
     this.failureCount = 0;
     this.nextQrAllowedAt = 0;
     logger.info('qq-auth.login-confirmed', {
+      loginChannel: session.channel,
       hasCredential: true,
+      credentialLoginType: credential.loginType,
+      credentialKeys: Object.keys(credential).sort(),
       credentialKeyLength: credential.musickey.length,
     });
   }
@@ -1141,7 +1230,7 @@ class QrLoginServiceImpl implements QrLoginService {
     if (terminalState(session.state)) return;
     if (event.type === 'waiting') session.state = 'waiting';
     else if (event.type === 'scanned') session.state = 'scanned';
-    else if (event.type === 'cookies') {
+    else if (event.type === 'cookies' || event.type === 'authorized') {
       void this.finalizeLogin(session, event.payload).catch((error) =>
         this.failSession(session, error),
       );
@@ -1151,7 +1240,9 @@ class QrLoginServiceImpl implements QrLoginService {
     }
   }
 
-  public async createSession(): Promise<string> {
+  public async createSession(channel: QrLoginChannel = DEFAULT_LOGIN_CHANNEL): Promise<string> {
+    if (!isSupportedLoginChannel(channel))
+      throw new QrLoginServiceError(`Unsupported QR login channel: ${channel}`, 400);
     this.cleanup();
     const retryAfterMs = Math.max(0, this.nextQrAllowedAt - this.now());
     if (retryAfterMs > 0)
@@ -1167,16 +1258,45 @@ class QrLoginServiceImpl implements QrLoginService {
       const key = this.random(24).toString('hex');
       this.qrSessions.set(key, {
         key,
+        channel,
         state: 'created',
         createdAt: this.now(),
         expiresAt: this.now() + QR_TTL_MS,
       });
+      logger.info('qq-auth.qr-session-created', { loginChannel: channel });
       return key;
     } catch (error) {
       throw this.failBootstrap(error);
     } finally {
       this.creatingSession = false;
     }
+  }
+
+  private sessionHttp(session: QrSession): AuthHttpClient {
+    if (!session.http) session.http = this.createSessionHttp();
+    return session.http;
+  }
+
+  private async createChannelQr(
+    session: QrSession,
+  ): Promise<{ identifier: string; imageUrl: string; expiresIn?: number }> {
+    if (session.channel === 'wechat') return createWechatQr(this.sessionHttp(session));
+    const qr = await createNativeQr(this.http, this.deviceStore.get());
+    return { identifier: qr.qrcodeId, imageUrl: qr.imageUrl, expiresIn: qr.expiresIn };
+  }
+
+  private listenForChannel(session: QrSession, identifier: string): QrEventListener {
+    const onEvent = (event: QrEvent): void => this.onQrEvent(session, event);
+    const timeoutMs = session.expiresAt - this.now();
+    if (session.channel === 'wechat') {
+      return createWechatQrListener(
+        { http: this.sessionHttp(session), sleep: this.sleep, now: this.now },
+        identifier,
+        onEvent,
+        timeoutMs,
+      );
+    }
+    return this.listen(identifier, onEvent, timeoutMs);
   }
 
   public async createQr(key: string): Promise<string> {
@@ -1186,17 +1306,18 @@ class QrLoginServiceImpl implements QrLoginService {
       throw new QrLoginServiceError('QR session cannot create another code', 409);
     session.state = 'creating';
     try {
-      const qr = await createNativeQr(this.http, this.deviceStore.get());
-      session.qrcodeId = qr.qrcodeId;
+      const qr = await this.createChannelQr(session);
+      session.identifier = qr.identifier;
+      if (session.channel === 'mobile') session.qrcodeId = qr.identifier;
       session.imageUrl = qr.imageUrl;
       if (qr.expiresIn && qr.expiresIn > 0) {
         session.expiresAt = Math.min(session.expiresAt, this.now() + qr.expiresIn * 1000);
       }
-      session.listener = this.listen(
-        qr.qrcodeId,
-        (event) => this.onQrEvent(session, event),
-        session.expiresAt - this.now(),
-      );
+      logger.info('qq-auth.qr-created', {
+        loginChannel: session.channel,
+        qrIdentifierLength: qr.identifier.length,
+      });
+      session.listener = this.listenForChannel(session, qr.identifier);
       void session.listener.done.catch((error) => this.failSession(session, error));
       await session.listener.ready;
       return qr.imageUrl;

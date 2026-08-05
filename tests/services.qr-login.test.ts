@@ -37,11 +37,66 @@ const dictionaryOf = (value: unknown): Record<string, unknown> =>
 const methodOf = (payload: unknown): string =>
   String(dictionaryOf(dictionaryOf(payload).req_0).method ?? '');
 
+const WX_UUID = 'wx-uuid-fixture';
+const WX_CODE = 'wx-oauth-code';
+const WX_PNG = Buffer.from('89504e470d0a1a0a01020304', 'hex');
+
+const wxStatusBody = (errcode: number, code = ''): string =>
+  `window.wx_errcode=${errcode};window.wx_code='${code}';`;
+
 interface HarnessOptions {
   failCredential?: boolean;
   deviceRepository?: DeviceContextRepository;
   qimei?: () => AxiosResponse<unknown>;
+  /** Raw poll bodies served in order; the last one keeps repeating. */
+  wechatStatuses?: string[];
+  wechatQrPage?: string;
+  wechatImage?: Buffer;
 }
+
+/**
+ * Stands in for the WeChat web endpoints. It is a separate client on purpose: the real service
+ * builds one per QR session so the weixin.qq.com cookie jar never mixes with the musicu one.
+ */
+const createWechatHttpStub = (options: HarnessOptions) => {
+  const requests: AxiosRequestConfig[] = [];
+  // The last entry keeps being served, so a test can hold a state and then push the next one.
+  const statuses = [
+    ...(options.wechatStatuses ?? [
+      wxStatusBody(408),
+      wxStatusBody(404),
+      wxStatusBody(405, WX_CODE),
+    ]),
+  ];
+  let polls = 0;
+  const request = jest.fn(async (config: AxiosRequestConfig) => {
+    requests.push(config);
+    const url = String(config.url);
+    if (url === 'https://open.weixin.qq.com/connect/qrconnect') {
+      return response(
+        options.wechatQrPage ??
+          `<img class="qrcode" src="/connect/qrcode/${WX_UUID}">` +
+            `<a href="https://open.weixin.qq.com/connect/confirm?uuid=${WX_UUID}">open</a>`,
+      );
+    }
+    if (url.includes('/connect/qrcode/')) return response(options.wechatImage ?? WX_PNG);
+    if (url.includes('/l/qrconnect')) {
+      const body = statuses[Math.min(polls, statuses.length - 1)];
+      polls += 1;
+      return response(body);
+    }
+    throw new Error(`Unexpected WeChat URL: ${url}`);
+  });
+  return {
+    requests,
+    pushStatus: (body: string) => statuses.push(body),
+    client: {
+      getCookieHeader: () => '',
+      request: request as unknown as AuthHttpClient['request'],
+      post: jest.fn(),
+    } as unknown as AuthHttpClient,
+  };
+};
 
 const createProtocolHarness = (options: HarnessOptions = {}) => {
   const deviceRepository = options.deviceRepository ?? createMemoryDeviceContextRepository();
@@ -75,6 +130,13 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
       return response({ code: 0, req_0: { code: 50006, data: {} } } as T);
     }
     if (method === 'Login') {
+      const param = dictionaryOf(dictionaryOf(dictionaryOf(payload).req_0).param);
+      // The WeChat exchange returns no loginType, so the channel default has to fill it in.
+      if (param.strAppid)
+        return response({
+          code: 0,
+          req_0: { code: 0, data: { musicid: 456, musickey: 'wechat-credential-key' } },
+        } as T);
       return response({
         code: 0,
         req_0: { code: 0, data: { musicid: 123, musickey: 'credential-key', loginType: 6 } },
@@ -124,9 +186,14 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
   };
   let emit: ((event: TestQrEvent) => void) | undefined;
   let closed = false;
+  const wechat = createWechatHttpStub(options);
   const service = createQrLoginService({
     http,
     deviceRepository,
+    createSessionHttp: () => wechat.client,
+    // Must yield to the macrotask queue: an instantly resolved sleep would turn the poll loop
+    // into a microtask chain that starves every timer in the test.
+    sleep: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
     randomBytes: (size) => Buffer.alloc(size, 7),
     listen: (_qrcodeId, onEvent) => {
       emit = onEvent;
@@ -146,6 +213,8 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
     httpPost: post,
     deviceRepository,
     service,
+    wechatRequests: wechat.requests,
+    pushWechatStatus: wechat.pushStatus,
     emit: (event: TestQrEvent) => {
       if (!emit) throw new Error('listener not started');
       emit(event);
@@ -154,10 +223,13 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
   };
 };
 
+// Yields with a timer rather than setImmediate: the WeChat poll loop waits on setTimeout, and
+// a setImmediate loop can burn 200 turns of the event loop without a millisecond of wall clock
+// ever passing, so the poll would never get its turn.
 const waitFor = async (predicate: () => boolean): Promise<void> => {
-  for (let index = 0; index < 20; index += 1) {
+  for (let index = 0; index < 200; index += 1) {
     if (predicate()) return;
-    await new Promise<void>((resolve) => setImmediate(resolve));
+    await new Promise<void>((resolve) => setTimeout(resolve, 1));
   }
   throw new Error('condition was not reached');
 };
@@ -376,6 +448,128 @@ describe('QQ native QR login service', () => {
 
     expect(harness.service.checkQr(key)).toMatchObject({ code: 800, message: 'QR code expired' });
     expect(harness.service.checkQr('missing')).toEqual({ code: 800, message: 'QR code expired' });
+  });
+});
+
+describe('QQ login channel routing', () => {
+  const loginParamOf = (harness: ReturnType<typeof createProtocolHarness>) =>
+    dictionaryOf(
+      dictionaryOf(
+        dictionaryOf(
+          jest
+            .mocked(harness.httpPost)
+            .mock.calls.map((call) => call[1])
+            .find((payload) => methodOf(payload) === 'Login'),
+        ).req_0,
+      ).param,
+    );
+
+  it('should default to the QQ Music App channel when no channel is requested', async () => {
+    const harness = createProtocolHarness();
+    const key = await harness.service.createSession();
+    await harness.service.createQr(key);
+
+    expect(harness.calls).toContain('CreateQRCode');
+    expect(harness.wechatRequests).toHaveLength(0);
+  });
+
+  it('should reject a channel that is not routable yet', async () => {
+    const harness = createProtocolHarness();
+
+    const error = await harness.service.createSession('qq').catch((reason: unknown) => reason);
+
+    expect(error).toBeInstanceOf(QrLoginServiceError);
+    expect(error).toEqual(expect.objectContaining({ httpStatus: 400 }));
+    expect(harness.calls).toEqual([]);
+  });
+
+  it('should drive the WeChat channel through the web QR flow and exchange the OAuth code', async () => {
+    const harness = createProtocolHarness({ wechatStatuses: [wxStatusBody(408)] });
+    const key = await harness.service.createSession('wechat');
+
+    const imageUrl = await harness.service.createQr(key);
+    expect(imageUrl).toMatch(/^data:image\/png;base64,/);
+    expect(harness.service.checkQr(key)).toMatchObject({ code: 801 });
+
+    harness.pushWechatStatus(wxStatusBody(404));
+    await waitFor(() => harness.service.checkQr(key).code === 802);
+    harness.pushWechatStatus(wxStatusBody(405, WX_CODE));
+    await waitFor(() => harness.service.checkQr(key).code === 803);
+
+    // The WeChat exchange swaps an OAuth code, not the App channel's MQTT token.
+    expect(loginParamOf(harness)).toEqual({ code: WX_CODE, strAppid: 'wx48db31d50e334801' });
+    expect(harness.comms.find((comm) => comm.tmeLoginType !== undefined)).toMatchObject({
+      tmeLoginType: 1,
+    });
+    expect(harness.calls).not.toContain('CreateQRCode');
+  });
+
+  it('should carry the WeChat login type into later authenticated requests', async () => {
+    const harness = createProtocolHarness();
+    const key = await harness.service.createSession('wechat');
+    await harness.service.createQr(key);
+    await waitFor(() => harness.service.checkQr(key).code === 803);
+    const token = harness.service.checkQr(key).cookie?.split('=')[1];
+
+    await harness.service.getUserPlaylists(token);
+
+    // The upstream reply carried no loginType, so the channel default has to travel with it.
+    expect(harness.comms.at(-1)).toMatchObject({ qq: '456', tmeLoginType: 1 });
+  });
+
+  it('should keep the Android device context off the WeChat web endpoints', async () => {
+    const harness = createProtocolHarness();
+    const key = await harness.service.createSession('wechat');
+    await harness.service.createQr(key);
+    await waitFor(() => harness.service.checkQr(key).code === 803);
+
+    const serialized = JSON.stringify(harness.wechatRequests);
+    for (const leak of [QIMEI_16, QIMEI_36, 'comm', 'tmeLoginType', 'session-sid'])
+      expect(serialized).not.toContain(leak);
+    expect(harness.wechatRequests[0]).toMatchObject({ responseType: 'text' });
+    expect(harness.wechatRequests[1]).toMatchObject({ responseType: 'arraybuffer' });
+  });
+
+  it('should map a refused WeChat QR to the expired code', async () => {
+    const harness = createProtocolHarness({ wechatStatuses: [wxStatusBody(403)] });
+    const key = await harness.service.createSession('wechat');
+    await harness.service.createQr(key);
+
+    await waitFor(() => harness.service.checkQr(key).code === 800);
+
+    expect(harness.service.checkQr(key)).toMatchObject({ code: 800, message: 'QR code expired' });
+    expect(harness.calls).not.toContain('Login');
+  });
+
+  it('should preserve an unrecognised WeChat status as an opaque upstream code', async () => {
+    const harness = createProtocolHarness({ wechatStatuses: [wxStatusBody(500)] });
+    const key = await harness.service.createSession('wechat');
+    await harness.service.createQr(key);
+
+    await waitFor(() => harness.service.checkQr(key).code === 800);
+
+    expect(harness.service.checkQr(key)).toEqual(
+      expect.objectContaining({ code: 800, upstreamCode: 500, retryAfterMs: 30000 }),
+    );
+  });
+
+  it('should keep the WeChat uuid and OAuth code out of the logs', async () => {
+    const spies = (['info', 'warn', 'error'] as const).map((level) =>
+      jest.spyOn(logger, level).mockImplementation(() => undefined),
+    );
+    try {
+      const harness = createProtocolHarness();
+      const key = await harness.service.createSession('wechat');
+      await harness.service.createQr(key);
+      await waitFor(() => harness.service.checkQr(key).code === 803);
+
+      const logged = JSON.stringify(spies.map((spy) => spy.mock.calls));
+      for (const secret of [WX_UUID, WX_CODE, 'wechat-credential-key'])
+        expect(logged).not.toContain(secret);
+      expect(logged).toContain('wechat');
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
   });
 });
 

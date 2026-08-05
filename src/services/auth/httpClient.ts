@@ -62,7 +62,11 @@ export const createAuthHttpClient = (
           ...config.headers,
           ...(cookies ? { Cookie: cookies } : {}),
         },
-        responseType: 'json',
+        // The web login channels answer with HTML, `window.wx_errcode=...` / `ptuiCB('...')`
+        // script text and raw QR images, so a caller may opt into `text` / `arraybuffer`
+        // explicitly. Anything that does not ask stays JSON: this must never fall back to the
+        // global axios default, which is exactly what `src/util/request.ts` rewrites.
+        responseType: config.responseType ?? 'json',
         maxRedirects: 0,
         validateStatus: (status) => status >= 200 && status < 400,
       });

@@ -1,5 +1,10 @@
 import type { Context } from 'koa';
-import qrLoginService, { QrLoginServiceError } from '../services/auth/qrLogin';
+import qrLoginService, {
+  DEFAULT_LOGIN_CHANNEL,
+  isSupportedLoginChannel,
+  QrLoginServiceError,
+  SUPPORTED_LOGIN_CHANNELS,
+} from '../services/auth/qrLogin';
 import { getTypedQuery } from '../types/core/request';
 
 export const AUTH_COOKIE_NAME = 'qqmusic_session';
@@ -7,6 +12,7 @@ export const AUTH_COOKIE_NAME = 'qqmusic_session';
 interface LoginQuery {
   key?: string;
   cookie?: string;
+  channel?: string;
 }
 
 const tokenFromCookieString = (cookie: string): string | undefined => {
@@ -41,8 +47,19 @@ const setServiceError = (ctx: Context, error: unknown): void => {
 };
 
 export const qrKey = async (ctx: Context): Promise<void> => {
+  // Optional and backward compatible: no `channel` means the QQ Music App QR, which is what
+  // every existing caller gets today. The response shape is unchanged either way.
+  const { channel = DEFAULT_LOGIN_CHANNEL } = getTypedQuery<LoginQuery>(ctx);
+  if (!isSupportedLoginChannel(channel)) {
+    ctx.status = 400;
+    ctx.body = {
+      code: 400,
+      message: `channel must be one of ${SUPPORTED_LOGIN_CHANNELS.join(', ')}`,
+    };
+    return;
+  }
   try {
-    const key = await qrLoginService.createSession();
+    const key = await qrLoginService.createSession(channel);
     ctx.status = 200;
     ctx.body = { code: 200, data: { unikey: key } };
   } catch (error) {
