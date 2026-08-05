@@ -1345,3 +1345,17 @@ QIMEI 与 device session 因此跨进程重启复用（重启后日志为 `sourc
 日志只记录外层／内层 code、数据类型与 q16／q36 长度。不得硬读 probe 的 `test-results`，也不要记录 QIMEI、完整响应 body、QR ID、cookie、token、`musickey`、MQTT token 或 Android 装置值。
 
 `GetSession.data.session.uid` 在真实响应中可能是数字，service 会将数字或字符串正规化为内部字符串；不要恢复为只接受字符串的解析方式。所有 auth session 都只存在单进程内存，服务重启、水平扩容或请求落到另一个实例时不会共享登录态；device context 的安全重用是独立问题，不得借此持久化用户登录凭证。
+
+#### 容器部署下的运行时约定
+
+Folia 的 `folia-qq-api` 镜像用 `npm run build:js` 的 JavaScript 产物运行（`node dist/src/app.js`），不在容器里跑 `ts-node`：
+
+| 项目 | 容器内取值 |
+| --- | --- |
+| 端口 | `PORT=3000`，只经 gateway 的 `/qq/` 暴露 |
+| 装置状态 | `QQ_AUTH_STATE_PATH=/app/.auth-state/qq-device.json`，挂具名卷 |
+| 根文件系统 | 只读；`/tmp` 为 tmpfs，装置状态卷是唯一可写路径 |
+| 运行用户 | `node`（非 root），`no-new-privileges` |
+| 健康检查 | `GET /login/status`，只读进程内会话状态，不会建立 QR 或注册装置 |
+
+因为运行时是 `--omit=dev` 安装，`src/` 里 import 的每个包都必须在 `dependencies`；`tests/runtime.dependencies.test.ts` 会在这条约束被破坏时失败。装置状态卷被删除后下次启动会重新注册装置，属于预期行为。

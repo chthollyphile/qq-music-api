@@ -61,9 +61,22 @@ npm run test
 
 # 本地启动
 npm start
+
+# 编译出 JavaScript 产物（Docker / Electron 用）
+npm run build:js
+
+# 直接运行编译产物
+npm run start:dist
 ```
 
 项目默认监听端口是 `3200`，启动成功后可在浏览器访问 `http://localhost:3200` 体验接口服务。
+
+`npm start` 走 `ts-node` 直接执行 TypeScript，只适合本地开发。容器与桌面端嵌入需要可 `require` 的 JavaScript：
+
+- `npm run build:js` = `tsc -p tsconfig.build.json --outDir dist` + `scripts/prepare-runtime-assets.js`。
+- 产物是 `dist/src/app.js`（入口）、`dist/package.json`（`src/app.ts` 读取的版本号）与 `dist/public/`（Explorer 静态资源，`koa-static` 从 `dist/src` 的上一级读取）。
+- `dist/` 已 gitignore，每次构建前会被覆盖。
+- 只在 `src/` 中真正 import 的包才能留在 `devDependencies` 之外的位置：运行时依赖必须放 `dependencies`，否则 `npm ci --omit=dev` 的镜像启动即缺包。`tests/runtime.dependencies.test.ts` 守住这条约束（`chalk`、`colors` 因此已从 `devDependencies` 移入 `dependencies`）。
 
 ### 🏗️ 项目架构
 
@@ -171,6 +184,8 @@ npm run run:images
 # remote run
 docker pull qq-music-api
 ```
+
+仓库根目录的 `Dockerfile` 是上游原有的单阶段镜像（`ts-node` 直跑源码）。Folia 部署不使用它：`folia-qq-api` 镜像由 folia-major 仓库的 `deploy/docker/images/qq-api.Dockerfile` 构建，用 vendored 源码走 `npm ci` → `npm run build:js` → `npm prune --omit=dev` 两阶段，以非 root 用户运行 `dist/src/app.js`。改动 `src/`、`public/`、`package.json` 或 tsconfig 后，需要在 folia-major 侧执行 `node deploy/docker/scripts/sync-qq-api-source.mjs` 同步副本。
 
 ### 功能特性
 

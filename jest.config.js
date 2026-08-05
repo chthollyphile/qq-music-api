@@ -1,8 +1,8 @@
 module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
-  testPathIgnorePatterns: ['<rootDir>/node_modules/', '<rootDir>/.worktrees/'],
-  modulePathIgnorePatterns: ['<rootDir>/.worktrees/'],
+  testPathIgnorePatterns: ['<rootDir>/node_modules/', '<rootDir>/.worktrees/', '<rootDir>/dist/'],
+  modulePathIgnorePatterns: ['<rootDir>/.worktrees/', '<rootDir>/dist/'],
   collectCoverage: true,
   coverageDirectory: 'coverage',
   collectCoverageFrom: [

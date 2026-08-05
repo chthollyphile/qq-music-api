@@ -2,6 +2,9 @@
 node_modules
 *.log
 
+# npm run build:js 的 JavaScript 产物（Docker / Electron 运行时用，不提交）
+dist/
+
 .idea/
 # package-lock.json
 
