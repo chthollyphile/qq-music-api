@@ -46,6 +46,8 @@ const wxStatusBody = (errcode: number, code = ''): string =>
 
 interface HarnessOptions {
   failCredential?: boolean;
+  /** The exchanged WeChat key is rejected with safe code 1000 until refreshed. */
+  wechatNeedsRefresh?: boolean;
   deviceRepository?: DeviceContextRepository;
   qimei?: () => AxiosResponse<unknown>;
   /** Raw poll bodies served in order; the last one keeps repeating. */
@@ -102,83 +104,127 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
   const deviceRepository = options.deviceRepository ?? createMemoryDeviceContextRepository();
   const calls: string[] = [];
   const comms: Record<string, unknown>[] = [];
-  const post = jest.fn(async <T>(_url: string, payload?: unknown): Promise<AxiosResponse<T>> => {
-    if (!dictionaryOf(payload).req_0) {
-      calls.push('GetQimei');
-      if (options.qimei) return options.qimei() as AxiosResponse<T>;
-      return response({
-        data: JSON.stringify({ code: 0, data: { q16: QIMEI_16, q36: QIMEI_36 } }),
-      } as T);
-    }
-    const method = methodOf(payload);
-    calls.push(method);
-    comms.push(dictionaryOf(dictionaryOf(payload).comm));
-    if (method === 'GetSession') {
-      return response({
-        code: 0,
-        req_0: { code: 0, data: { session: { uid: 1234567890, sid: 'session-sid' } } },
-      } as T);
-    }
-    if (method === 'CreateQRCode') {
-      const png = Buffer.from('89504e470d0a1a0a01020304', 'hex').toString('base64');
-      return response({
-        code: 0,
-        req_0: { code: 0, data: { qrcodeID: 'qr-id', qrcode: png, expiresIn: 180 } },
-      } as T);
-    }
-    if (method === 'Login' && options.failCredential) {
-      return response({ code: 0, req_0: { code: 50006, data: {} } } as T);
-    }
-    if (method === 'Login') {
-      const param = dictionaryOf(dictionaryOf(dictionaryOf(payload).req_0).param);
-      // The WeChat exchange returns no loginType, so the channel default has to fill it in.
-      if (param.strAppid)
+  const post = jest.fn(
+    async <T>(
+      _url: string,
+      payload?: unknown,
+      _config?: AxiosRequestConfig,
+    ): Promise<AxiosResponse<T>> => {
+      if (!dictionaryOf(payload).req_0) {
+        calls.push('GetQimei');
+        if (options.qimei) return options.qimei() as AxiosResponse<T>;
+        return response({
+          data: JSON.stringify({ code: 0, data: { q16: QIMEI_16, q36: QIMEI_36 } }),
+        } as T);
+      }
+      const method = methodOf(payload);
+      calls.push(method);
+      comms.push(dictionaryOf(dictionaryOf(payload).comm));
+      if (method === 'GetSession') {
         return response({
           code: 0,
-          req_0: { code: 0, data: { musicid: 456, musickey: 'wechat-credential-key' } },
+          req_0: { code: 0, data: { session: { uid: 1234567890, sid: 'session-sid' } } },
         } as T);
-      return response({
-        code: 0,
-        req_0: { code: 0, data: { musicid: 123, musickey: 'credential-key', loginType: 6 } },
-      } as T);
-    }
-    if (method === 'GetLoginUserInfo' && options.failCredential) {
-      return response({ code: 0, req_0: { code: 50006, data: {} } } as T);
-    }
-    if (method === 'GetLoginUserInfo') {
-      return response({
-        code: 0,
-        req_0: {
+      }
+      if (method === 'CreateQRCode') {
+        const png = Buffer.from('89504e470d0a1a0a01020304', 'hex').toString('base64');
+        return response({
           code: 0,
-          data: { musicid: 123, nickname: '我的 QQ 帳號', musickey: 'must-not-leak' },
-        },
-      } as T);
-    }
-    if (method === 'GetPlaylistByUin') {
-      return response({
-        code: 0,
-        req_0: {
+          req_0: { code: 0, data: { qrcodeID: 'qr-id', qrcode: png, expiresIn: 180 } },
+        } as T);
+      }
+      if (method === 'Login' && options.failCredential) {
+        return response({ code: 0, req_0: { code: 50006, data: {} } } as T);
+      }
+      if (method === 'Login') {
+        const param = dictionaryOf(dictionaryOf(dictionaryOf(payload).req_0).param);
+        if (param.loginMode === 2)
+          return response({
+            code: 0,
+            req_0: {
+              code: 0,
+              data: {
+                musicid: 456,
+                str_musicid: '456',
+                musickey: 'wechat-refreshed-key',
+                openid: 'wechat-openid',
+                refresh_token: 'wechat-refresh-token-2',
+                refresh_key: 'wechat-refresh-key-2',
+                unionid: 'wechat-unionid',
+                encryptUin: 'wechat-encrypt-uin',
+                nick: '我的微信帳號',
+              },
+            },
+          } as T);
+        // The WeChat exchange returns no loginType, so the channel default has to fill it in.
+        if (param.strAppid)
+          return response({
+            code: 0,
+            req_0: {
+              code: 0,
+              data: {
+                musicid: 456,
+                str_musicid: '456',
+                musickey: 'wechat-credential-key',
+                openid: 'wechat-openid',
+                refresh_token: 'wechat-refresh-token',
+                refresh_key: 'wechat-refresh-key',
+                unionid: 'wechat-unionid',
+                encryptUin: 'wechat-encrypt-uin',
+                nick: '我的微信帳號',
+              },
+            },
+          } as T);
+        return response({
           code: 0,
-          data: { v_playlist: [{ tid: 7, dirName: '我喜欢' }], total: 1, bFinish: true },
-        },
-      } as T);
-    }
-    if (method === 'CgiGetVkey') {
-      const param = dictionaryOf(dictionaryOf(dictionaryOf(payload).req_0).param);
-      const songmid = Array.isArray(param.songmid) ? String(param.songmid[0] ?? '') : '';
-      return response({
-        code: 0,
-        req_0: {
+          req_0: { code: 0, data: { musicid: 123, musickey: 'credential-key', loginType: 6 } },
+        } as T);
+      }
+      if (method === 'GetLoginUserInfo' && options.failCredential) {
+        return response({ code: 0, req_0: { code: 50006, data: {} } } as T);
+      }
+      if (method === 'GetLoginUserInfo') {
+        const comm = dictionaryOf(dictionaryOf(payload).comm);
+        if (options.wechatNeedsRefresh && comm.tmeLoginType === 1)
+          return response({ code: 0, req_0: { code: 1000, data: {} } } as T);
+        return response({
           code: 0,
-          data: {
-            sip: ['https://audio.example.test/'],
-            midurlinfo: [{ songmid, purl: 'fixture.flac' }],
+          req_0: {
+            code: 0,
+            data: {
+              musicid: comm.tmeLoginType === 1 ? 456 : 123,
+              nickname: comm.tmeLoginType === 1 ? '我的微信帳號' : '我的 QQ 帳號',
+              musickey: 'must-not-leak',
+            },
           },
-        },
-      } as T);
-    }
-    throw new Error(`Unexpected method: ${method}`);
-  });
+        } as T);
+      }
+      if (method === 'GetPlaylistByUin') {
+        return response({
+          code: 0,
+          req_0: {
+            code: 0,
+            data: { v_playlist: [{ tid: 7, dirName: '我喜欢' }], total: 1, bFinish: true },
+          },
+        } as T);
+      }
+      if (method === 'CgiGetVkey' || method === 'UrlGetVkey') {
+        const param = dictionaryOf(dictionaryOf(dictionaryOf(payload).req_0).param);
+        const songmid = Array.isArray(param.songmid) ? String(param.songmid[0] ?? '') : '';
+        return response({
+          code: 0,
+          req_0: {
+            code: 0,
+            data: {
+              sip: ['https://audio.example.test/'],
+              midurlinfo: [{ songmid, purl: 'fixture.flac' }],
+            },
+          },
+        } as T);
+      }
+      throw new Error(`Unexpected method: ${method}`);
+    },
+  );
   const http: AuthHttpClient = {
     getCookieHeader: () => '',
     request: jest.fn(),
@@ -331,7 +377,7 @@ describe('QQ native QR login service', () => {
       'song-mid': { url: 'https://audio.example.test/fixture.flac', error: false },
     });
     await expect(harness.service.getMusicPlay('unknown', 'song-mid', 'flac')).resolves.toBeNull();
-    expect(harness.calls).toContain('CgiGetVkey');
+    expect(harness.calls).toContain('UrlGetVkey');
     expect(harness.comms.at(-1)).toMatchObject({
       qq: '123',
       authst: 'credential-key',
@@ -340,7 +386,20 @@ describe('QQ native QR login service', () => {
     const vkeyPayload = dictionaryOf(
       dictionaryOf(dictionaryOf(jest.mocked(harness.httpPost).mock.calls.at(-1)?.[1])).req_0,
     );
-    expect(dictionaryOf(vkeyPayload.param).filename).toEqual(['F000song-midmedia-mid.flac']);
+    expect(vkeyPayload.module).toBe('music.vkey.GetVkey');
+    expect(dictionaryOf(vkeyPayload.param)).toMatchObject({
+      filename: ['F000media-mid.flac'],
+      songmid: ['song-mid'],
+      songtype: [0],
+      uin: '123',
+      ctx: 0,
+    });
+    expect(dictionaryOf(vkeyPayload.param).guid).toMatch(/^[0-9a-f]{32}$/);
+    expect(dictionaryOf(jest.mocked(harness.httpPost).mock.calls.at(-1)?.[2]).headers).toEqual(
+      expect.objectContaining({
+        Cookie: 'uin=123; qqmusic_uin=123; qm_keyst=credential-key; qqmusic_key=credential-key',
+      }),
+    );
   });
 
   it('should clear auth and close QR listeners on logout', async () => {
@@ -517,6 +576,68 @@ describe('QQ login channel routing', () => {
     expect(harness.comms.at(-1)).toMatchObject({ qq: '456', tmeLoginType: 1 });
   });
 
+  it('should refresh a WeChat credential rejected with safe code 1000 before confirming', async () => {
+    const harness = createProtocolHarness({ wechatNeedsRefresh: true });
+    const key = await harness.service.createSession('wechat');
+    await harness.service.createQr(key);
+    await waitFor(() => harness.service.checkQr(key).code === 803);
+    const token = harness.service.checkQr(key).cookie?.split('=')[1];
+
+    const profile = await harness.service.getLoginStatus(token);
+    expect(profile).toMatchObject({
+      musicid: 456,
+      nickname: '我的微信帳號',
+    });
+    for (const secret of [
+      'musickey',
+      'openid',
+      'unionid',
+      'refresh_token',
+      'refresh_key',
+      'access_token',
+      'encryptUin',
+    ])
+      expect(profile).not.toHaveProperty(secret);
+
+    const refreshCall = jest.mocked(harness.httpPost).mock.calls.find(([, payload]) => {
+      const request = dictionaryOf(dictionaryOf(payload).req_0);
+      return request.method === 'Login' && dictionaryOf(request.param).loginMode === 2;
+    });
+    expect(refreshCall).toBeDefined();
+    expect(dictionaryOf(dictionaryOf(dictionaryOf(refreshCall?.[1]).req_0).param)).toMatchObject({
+      openid: 'wechat-openid',
+      refresh_token: 'wechat-refresh-token',
+      str_musicid: '456',
+      musickey: 'wechat-credential-key',
+      unionid: 'wechat-unionid',
+      refresh_key: 'wechat-refresh-key',
+      loginMode: 2,
+    });
+    expect(dictionaryOf(dictionaryOf(refreshCall?.[1]).comm)).toMatchObject({
+      authst: 'wechat-credential-key',
+      tmeLoginType: 1,
+    });
+    expect(harness.comms.at(-1)).toMatchObject({
+      authst: 'wechat-refreshed-key',
+      tmeLoginType: 1,
+    });
+    const profileCalls = jest
+      .mocked(harness.httpPost)
+      .mock.calls.filter(([, payload]) => methodOf(payload) === 'GetLoginUserInfo');
+    expect(dictionaryOf(profileCalls[0]?.[2]).headers).toEqual(
+      expect.objectContaining({
+        Cookie:
+          'uin=456; qqmusic_uin=456; qm_keyst=wechat-credential-key; qqmusic_key=wechat-credential-key',
+      }),
+    );
+    expect(dictionaryOf(profileCalls.at(-1)?.[2]).headers).toEqual(
+      expect.objectContaining({
+        Cookie:
+          'uin=456; qqmusic_uin=456; qm_keyst=wechat-refreshed-key; qqmusic_key=wechat-refreshed-key',
+      }),
+    );
+  });
+
   it('should keep the Android device context off the WeChat web endpoints', async () => {
     const harness = createProtocolHarness();
     const key = await harness.service.createSession('wechat');
@@ -595,5 +716,29 @@ describe('QQ auth HTTP client', () => {
     expect(requests[1].method).toBe('GET');
     expect(requests[1].headers).toEqual(expect.objectContaining({ Cookie: 'sid=secret' }));
     expect(client.getCookieHeader()).toBe('sid=secret');
+  });
+
+  it('should merge request credentials with cookies already stored in the jar', async () => {
+    const requests: AxiosRequestConfig[] = [];
+    const transport = {
+      request: jest.fn(async (config: AxiosRequestConfig) => {
+        requests.push(config);
+        return requests.length === 1
+          ? response({}, 200, { 'set-cookie': ['sid=session-secret; Path=/'] })
+          : response({ ok: true });
+      }),
+    } as unknown as AxiosInstance;
+    const client = createAuthHttpClient(transport);
+
+    await client.post('https://example.test/bootstrap', {});
+    await client.post(
+      'https://example.test/musicu',
+      {},
+      { headers: { Cookie: 'uin=123; qqmusic_uin=123' } },
+    );
+
+    expect(requests[1].headers).toEqual(
+      expect.objectContaining({ Cookie: 'sid=session-secret; uin=123; qqmusic_uin=123' }),
+    );
   });
 });

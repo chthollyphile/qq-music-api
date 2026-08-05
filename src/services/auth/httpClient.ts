@@ -35,6 +35,20 @@ const updateCookieJar = (jar: Map<string, string>, setCookies: string[]): void =
 const cookieHeader = (jar: Map<string, string>): string =>
   Array.from(jar, ([name, value]) => `${name}=${value}`).join('; ');
 
+const mergeCookieHeaders = (...headers: string[]): string => {
+  const merged = new Map<string, string>();
+  for (const header of headers) {
+    for (const item of header.split(';')) {
+      const separator = item.indexOf('=');
+      if (separator <= 0) continue;
+      const name = item.slice(0, separator).trim();
+      const value = item.slice(separator + 1).trim();
+      if (name) merged.set(name, value);
+    }
+  }
+  return cookieHeader(merged);
+};
+
 const redirectedMethod = (status: number, method: string | undefined): Method => {
   if (status === 303) return 'GET';
   if ([301, 302].includes(status) && String(method).toUpperCase() === 'POST') return 'GET';
@@ -50,6 +64,14 @@ export const createAuthHttpClient = (
     let config = { ...initial };
     for (let redirectCount = 0; redirectCount <= MAX_REDIRECTS; redirectCount += 1) {
       const cookies = cookieHeader(jar);
+      const configuredHeaders = { ...(config.headers ?? {}) } as Record<string, unknown>;
+      const explicitCookieEntry = Object.entries(configuredHeaders).find(
+        ([name]) => name.toLowerCase() === 'cookie',
+      );
+      if (explicitCookieEntry) delete configuredHeaders[explicitCookieEntry[0]];
+      const explicitCookies =
+        typeof explicitCookieEntry?.[1] === 'string' ? explicitCookieEntry[1] : '';
+      const mergedCookies = mergeCookieHeaders(cookies, explicitCookies);
       // `src/util/request.ts` mutates the GLOBAL axios defaults (POST Content-Type,
       // responseType) for the legacy y.qq.com/c.y.qq.com services, and `axios.create()`
       // snapshots those defaults when it runs. Whether that module is imported before or
@@ -59,8 +81,8 @@ export const createAuthHttpClient = (
         ...config,
         headers: {
           ...(config.data === undefined ? {} : { 'Content-Type': JSON_CONTENT_TYPE }),
-          ...config.headers,
-          ...(cookies ? { Cookie: cookies } : {}),
+          ...configuredHeaders,
+          ...(mergedCookies ? { Cookie: mergedCookies } : {}),
         },
         // The web login channels answer with HTML, `window.wx_errcode=...` / `ptuiCB('...')`
         // script text and raw QR images, so a caller may opt into `text` / `arraybuffer`

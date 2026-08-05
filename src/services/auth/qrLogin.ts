@@ -1,5 +1,4 @@
 import crypto from 'node:crypto';
-import { _guid } from '../../config';
 import { logger } from '../../util/logger';
 import {
   type AndroidDevice,
@@ -241,23 +240,23 @@ const getAuthenticatedPlayUrls = async (
     .filter(Boolean);
   const qualityKey = String(quality) as keyof typeof MUSIC_FILE_TYPES;
   const fileType = MUSIC_FILE_TYPES[qualityKey] ?? MUSIC_FILE_TYPES[128];
-  const guid = _guid ? String(_guid) : '1429839143';
+  const guid = crypto.randomUUID().replaceAll('-', '');
+  const normalizedMediaId = stringOf(mediaId).trim();
   const data = await callMusicu(
     http,
     auth.device,
     'get-music-play',
-    'vkey.GetVkeyServer',
-    'CgiGetVkey',
+    'music.vkey.GetVkey',
+    'UrlGetVkey',
     {
       filename: songmidList.map(
-        (mid) => `${fileType.prefix}${mid}${mediaId || mid}${fileType.extension}`,
+        (mid) => `${fileType.prefix}${normalizedMediaId || `${mid}${mid}`}${fileType.extension}`,
       ),
       guid,
       songmid: songmidList,
-      songtype: [0],
-      uin: String(auth.credential.musicid),
-      loginflag: 1,
-      platform: '20',
+      songtype: songmidList.map(() => 0),
+      uin: stringOf(auth.credential.str_musicid) || String(auth.credential.musicid),
+      ctx: 0,
     },
     auth.credential,
   );
@@ -854,13 +853,29 @@ const callMusicu = async (
   credential?: QqCredential,
   overrides: Dictionary = {},
 ): Promise<Dictionary> => {
+  const musicid = credential
+    ? identifierOf(credential.str_musicid) || String(credential.musicid)
+    : '';
+  const credentialCookies = credential
+    ? [
+        `uin=${musicid}`,
+        `qqmusic_uin=${musicid}`,
+        `qm_keyst=${credential.musickey}`,
+        `qqmusic_key=${credential.musickey}`,
+      ].join('; ')
+    : '';
   const response = await http.post<unknown>(
     MUSICU_URL,
     {
       comm: buildAndroidComm(device, credential, overrides),
       req_0: { module, method, param },
     },
-    { headers: { 'User-Agent': `QQMusic 14090008(android ${device.osRelease})` } },
+    {
+      headers: {
+        'User-Agent': `QQMusic 14090008(android ${device.osRelease})`,
+        ...(credentialCookies ? { Cookie: credentialCookies } : {}),
+      },
+    },
   );
   const body = dictionaryOf(response.data);
   const item = dictionaryOf(body.req_0);
@@ -1014,20 +1029,115 @@ const exchangeWechatCredential = async (
     WECHAT_LOGIN_TYPE,
   );
 
-const getLoginUser = async (http: AuthHttpClient, auth: AuthSession): Promise<Dictionary> =>
+// QQMusicApi v0.6.6 treats these upstream numeric results as a signal to try the
+// channel-specific credential refresh. They remain opaque safety codes here.
+const CREDENTIAL_REFRESH_SAFETY_CODES = new Set([1000, 104401, 104400]);
+
+const getLoginUserWithCredential = async (
+  http: AuthHttpClient,
+  device: AndroidDevice,
+  credential: QqCredential,
+): Promise<Dictionary> =>
   dictionaryOf(
     sanitizePublicValue(
       await callMusicu(
         http,
-        auth.device,
+        device,
         'get-login-user',
         'music.UserInfo.userInfoServer',
         'GetLoginUserInfo',
         {},
-        auth.credential,
+        credential,
       ),
     ),
   );
+
+const getLoginUser = async (http: AuthHttpClient, auth: AuthSession): Promise<Dictionary> =>
+  getLoginUserWithCredential(http, auth.device, auth.credential);
+
+/** Builds the same public profile shape from the non-secret identity fields in a credential. */
+const publicProfileFromCredential = (credential: QqCredential): Dictionary => {
+  const strMusicId = stringOf(credential.str_musicid);
+  const nickname = stringOf(credential.nick) || stringOf(credential.nickname);
+  const avatarUrl = stringOf(credential.logo) || stringOf(credential.avatarUrl);
+  return {
+    musicid: credential.musicid,
+    ...(strMusicId ? { str_musicid: strMusicId } : {}),
+    ...(nickname ? { nickname, nick: nickname } : {}),
+    ...(avatarUrl ? { avatarUrl } : {}),
+  };
+};
+
+const getLoginProfile = async (http: AuthHttpClient, auth: AuthSession): Promise<Dictionary> => {
+  try {
+    return await getLoginUser(http, auth);
+  } catch (error) {
+    if (
+      auth.credential.loginType !== WECHAT_LOGIN_TYPE ||
+      !(error instanceof QqProtocolError) ||
+      error.upstreamCode === undefined ||
+      !CREDENTIAL_REFRESH_SAFETY_CODES.has(error.upstreamCode)
+    )
+      throw error;
+    return publicProfileFromCredential(auth.credential);
+  }
+};
+
+/** Refreshes a WeChat credential with the complete field set returned by its QR exchange. */
+const refreshWechatCredential = async (
+  http: AuthHttpClient,
+  device: AndroidDevice,
+  credential: QqCredential,
+): Promise<QqCredential> =>
+  credentialFrom(
+    await callMusicu(
+      http,
+      device,
+      'credential-refresh',
+      'music.login.LoginServer',
+      'Login',
+      {
+        openid: stringOf(credential.openid),
+        refresh_token: stringOf(credential.refresh_token),
+        str_musicid: stringOf(credential.str_musicid) || String(credential.musicid),
+        musickey: credential.musickey,
+        unionid: stringOf(credential.unionid),
+        refresh_key: stringOf(credential.refresh_key),
+        loginMode: 2,
+      },
+      credential,
+      { tmeLoginType: WECHAT_LOGIN_TYPE },
+    ),
+    WECHAT_LOGIN_TYPE,
+  );
+
+/** Refreshes the exchanged WeChat key once when the reference credential check requests it. */
+const validateWechatCredential = async (
+  http: AuthHttpClient,
+  device: AndroidDevice,
+  credential: QqCredential,
+): Promise<QqCredential> => {
+  try {
+    await getLoginUserWithCredential(http, device, credential);
+    return credential;
+  } catch (error) {
+    if (
+      !(error instanceof QqProtocolError) ||
+      error.upstreamCode === undefined ||
+      !CREDENTIAL_REFRESH_SAFETY_CODES.has(error.upstreamCode)
+    )
+      throw error;
+  }
+
+  const refreshed = await refreshWechatCredential(http, device, credential);
+  logger.info('qq-auth.credential-refreshed', {
+    loginChannel: 'wechat',
+    credentialLoginType: refreshed.loginType,
+    credentialKeys: Object.keys(refreshed).sort(),
+    credentialKeyLength: refreshed.musickey.length,
+  });
+  return refreshed;
+};
 
 const getPlaylists = async (
   http: AuthHttpClient,
@@ -1202,10 +1312,12 @@ class QrLoginServiceImpl implements QrLoginService {
   }
 
   private async finalizeLogin(session: QrSession, payload: unknown): Promise<void> {
-    const credential =
+    let credential =
       session.channel === 'wechat'
         ? await this.exchangeWechatLogin(session, payload)
         : await this.exchangeMobileLogin(session, payload);
+    if (session.channel === 'wechat')
+      credential = await validateWechatCredential(this.http, this.deviceStore.get(), credential);
     const token = this.random(32).toString('hex');
     this.authSessions.set(token, {
       token,
@@ -1358,12 +1470,12 @@ class QrLoginServiceImpl implements QrLoginService {
 
   public async getLoginStatus(token?: string): Promise<Dictionary | null> {
     const auth = this.authFor(token);
-    return auth ? getLoginUser(this.http, auth) : null;
+    return auth ? getLoginProfile(this.http, auth) : null;
   }
 
   public async getUserDetail(token?: string): Promise<Dictionary | null> {
     const auth = this.authFor(token);
-    return auth ? getLoginUser(this.http, auth) : null;
+    return auth ? getLoginProfile(this.http, auth) : null;
   }
 
   public async getUserPlaylists(token?: string, uin?: string): Promise<Dictionary | null> {
