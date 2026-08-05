@@ -4,6 +4,7 @@ const mockQrLoginService = {
   checkQr: jest.fn(),
   getLoginStatus: jest.fn(),
   getUserDetail: jest.fn(),
+  getUserLikedSongs: jest.fn(),
   getUserPlaylists: jest.fn(),
   logout: jest.fn(),
 };
@@ -33,6 +34,7 @@ describe('QQ login controllers', () => {
     mockQrLoginService.checkQr.mockReturnValue({ code: 801, message: 'Waiting for QR scan' });
     mockQrLoginService.getLoginStatus.mockResolvedValue(null);
     mockQrLoginService.getUserDetail.mockResolvedValue(null);
+    mockQrLoginService.getUserLikedSongs.mockResolvedValue(null);
     mockQrLoginService.getUserPlaylists.mockResolvedValue(null);
   });
 
@@ -146,10 +148,12 @@ describe('QQ login controllers', () => {
     const statusResponse = await request(server).get('/login/status');
     const detailResponse = await request(server).get('/user/detail');
     const playlistResponse = await request(server).get('/user/playlist');
+    const likedResponse = await request(server).get('/user/liked-songs');
 
     expect(statusResponse.body).toEqual({ code: 200, data: {} });
     expect(detailResponse.status).toBe(401);
     expect(playlistResponse.status).toBe(401);
+    expect(likedResponse.status).toBe(401);
   });
 
   it('should return authenticated playlists and clear the session on logout', async () => {
@@ -175,5 +179,25 @@ describe('QQ login controllers', () => {
     expect(mockQrLoginService.getUserPlaylists).toHaveBeenCalledWith('opaque-token', '123');
     expect(logoutResponse.body).toEqual({ code: 200 });
     expect(mockQrLoginService.logout).toHaveBeenCalledWith('opaque-token');
+  });
+
+  it('should return a bounded page from the built-in liked songs', async () => {
+    mockQrLoginService.getUserLikedSongs.mockResolvedValue({
+      songlist: [{ id: 9, mid: 'liked-song-mid' }],
+      total_song_num: 163,
+      hasmore: 1,
+    });
+
+    const response = await request(server)
+      .get('/user/liked-songs')
+      .query({ cookie: 'qqmusic_session=opaque-token', offset: '100', limit: '500' });
+
+    expect(response.body).toEqual({
+      code: 200,
+      songs: [{ id: 9, mid: 'liked-song-mid' }],
+      total: 163,
+      more: true,
+    });
+    expect(mockQrLoginService.getUserLikedSongs).toHaveBeenCalledWith('opaque-token', 100, 100);
   });
 });

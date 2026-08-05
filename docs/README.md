@@ -1264,20 +1264,23 @@ songs: [
 
 ### QQ 音乐原生扫码登录
 
-扫码登录使用 QQ 音乐 App 扫描上游直接返回的 PNG，不需要服务器生成二维码。
+扫码登录支持 QQ 音乐 App 与微信两条通道，直接返回上游 QR 图片，不需要服务器生成二维码。App 通道目前为 PNG，微信通道目前为 JPEG，调用方必须使用 data URL 自带的 MIME type。
 
 | 接口 | 参数 | 返回 |
 | --- | --- | --- |
-| `/login/qr/key` | 无 | `data.unikey`，短期 QR 工作阶段 key |
-| `/login/qr/create` | `key` | `data.qrimg`，`data:image/png;base64,...` |
+| `/login/qr/key` | 可选 `channel=mobile\|wechat` | `data.unikey`，短期 QR 工作阶段 key |
+| `/login/qr/create` | `key` | `data.qrimg`，MIME type 依上游图片嗅探 |
 | `/login/qr/check` | `key` | `800` 过期/失败、`801` 等待、`802` 已扫描、`803` 已确认 |
 | `/login/status` | cookie（浏览器自动携带） | `data.profile`；未登录时 `data` 为空 |
 | `/user/detail` | cookie | 当前用户信息 |
 | `/user/playlist` | 可选 `uid`、cookie | 自建和收藏歌单 |
+| `/user/liked-songs` | 可选 `offset`、`limit`（最大 100）、cookie | 内建「我喜欢」歌曲分页 |
 | `/getMusicPlay/:songmid` | `quality`、cookie | 使用当前扫码登录态取得播放链接 |
 | `/logout` | cookie | 清除短期内存登录态 |
 
 `qr/check` 成功时会设置 HttpOnly `qqmusic_session`，并在响应的 `cookie` 字段返回同一个 opaque session 值，供跨来源 transport 保存。该值不包含 QQ 音乐凭证；`musickey`、MQTT token 和 Android 装置上下文不会写入一般日志或响应。用户资料中的账号 ID 只会作为 profile 字段返回。
+
+`/user/playlist` 分别读取自建项目与收藏歌单后合并去重。内建「我喜欢」集合的 `dirId: 201` 不是普通歌单 ID，`/user/liked-songs` 会使用登录凭证的 `encryptUin` 调用专用接口；调用方不得把 `201` 或其 `tid` 猜成通用 `disstid`。
 
 登录态播放沿用 auth 专用 `createAuthHttpClient` 调用 `musicu.fcg`，不会自行建立 axios client，也不会依赖或修改共用 `src/util/request.ts` 的全局 defaults。
 

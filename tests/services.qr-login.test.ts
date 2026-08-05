@@ -208,6 +208,33 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
           },
         } as T);
       }
+      if (method === 'CgiGetPlaylistFavInfo') {
+        return response({
+          code: 0,
+          req_0: {
+            code: 0,
+            data: {
+              v_list: [{ id: 8, title: '收藏歌单', songnum: 3 }],
+              total: 1,
+              hasmore: 0,
+            },
+          },
+        } as T);
+      }
+      if (method === 'CgiGetDiss') {
+        return response({
+          code: 0,
+          req_0: {
+            code: 0,
+            data: {
+              songlist: [{ id: 9, mid: 'liked-song-mid', name: '收藏歌曲' }],
+              songlist_size: 1,
+              total_song_num: 1,
+              hasmore: 0,
+            },
+          },
+        } as T);
+      }
       if (method === 'CgiGetVkey' || method === 'UrlGetVkey') {
         const param = dictionaryOf(dictionaryOf(dictionaryOf(payload).req_0).param);
         const songmid = Array.isArray(param.songmid) ? String(param.songmid[0] ?? '') : '';
@@ -574,6 +601,47 @@ describe('QQ login channel routing', () => {
 
     // The upstream reply carried no loginType, so the channel default has to travel with it.
     expect(harness.comms.at(-1)).toMatchObject({ qq: '456', tmeLoginType: 1 });
+  });
+
+  it('should merge encrypted-UIN favorite playlists and load the built-in liked songs', async () => {
+    const harness = createProtocolHarness();
+    const key = await harness.service.createSession('wechat');
+    await harness.service.createQr(key);
+    await waitFor(() => harness.service.checkQr(key).code === 803);
+    const token = harness.service.checkQr(key).cookie?.split('=')[1];
+
+    await expect(harness.service.getUserPlaylists(token)).resolves.toMatchObject({
+      v_playlist: [
+        { tid: 7, dirName: '我喜欢' },
+        { id: 8, title: '收藏歌单', songnum: 3 },
+      ],
+      total: 2,
+      bFinish: true,
+    });
+    await expect(harness.service.getUserLikedSongs(token, 0, 100)).resolves.toMatchObject({
+      songlist: [{ id: 9, mid: 'liked-song-mid', name: '收藏歌曲' }],
+      total_song_num: 1,
+      hasmore: 0,
+    });
+
+    const favoriteCall = jest
+      .mocked(harness.httpPost)
+      .mock.calls.find(([, payload]) => methodOf(payload) === 'CgiGetPlaylistFavInfo');
+    const likedCall = jest
+      .mocked(harness.httpPost)
+      .mock.calls.find(([, payload]) => methodOf(payload) === 'CgiGetDiss');
+    expect(dictionaryOf(dictionaryOf(dictionaryOf(favoriteCall?.[1]).req_0).param)).toEqual({
+      uin: 'wechat-encrypt-uin',
+      offset: 0,
+      size: 100,
+    });
+    expect(dictionaryOf(dictionaryOf(dictionaryOf(likedCall?.[1]).req_0).param)).toMatchObject({
+      disstid: 0,
+      dirid: 201,
+      song_begin: 0,
+      song_num: 100,
+      enc_host_uin: 'wechat-encrypt-uin',
+    });
   });
 
   it('should refresh a WeChat credential rejected with safe code 1000 before confirming', async () => {

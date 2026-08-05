@@ -16,6 +16,7 @@ router.get('/login/status', context.loginStatus);
 router.get('/logout', context.logout);
 router.get('/user/detail', context.userDetail);
 router.get('/user/playlist', context.getUserPlaylist);
+router.get('/user/liked-songs', context.getUserLikedSongs);
 
 // downloadQQMusic
 router.get('/downloadQQMusic', context.getDownloadQQMusic);

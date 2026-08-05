@@ -136,6 +136,7 @@ export interface QrLoginService {
   getLoginStatus(token?: string): Promise<Dictionary | null>;
   getUserDetail(token?: string): Promise<Dictionary | null>;
   getUserPlaylists(token?: string, uin?: string): Promise<Dictionary | null>;
+  getUserLikedSongs(token?: string, offset?: number, limit?: number): Promise<Dictionary | null>;
   getMusicPlay(
     token: string | undefined,
     songmid: string,
@@ -213,6 +214,17 @@ const dictionaryOf = (value: unknown): Dictionary => (isDictionary(value) ? valu
 const stringOf = (value: unknown): string => (typeof value === 'string' ? value : '');
 const identifierOf = (value: unknown): string =>
   typeof value === 'string' || typeof value === 'number' ? String(value) : '';
+
+const credentialMusicId = (credential: QqCredential): string => {
+  const stringId = identifierOf(credential.str_musicid).trim();
+  const rawId = identifierOf(credential.musicid).trim();
+  return (
+    (stringId && stringId !== '0' ? stringId : '') ||
+    (rawId && rawId !== '0' ? rawId : '') ||
+    stringId ||
+    rawId
+  );
+};
 
 const numberOf = (value: unknown): number | undefined => {
   const parsed = Number(value);
@@ -437,7 +449,7 @@ export const buildAndroidComm = (
   ...(device.sessionSid ? { sid: device.sessionSid } : {}),
   ...(credential
     ? {
-        qq: String(credential.musicid),
+        qq: credentialMusicId(credential),
         authst: credential.musickey,
         tmeLoginType: credential.loginType,
       }
@@ -1143,22 +1155,97 @@ const getPlaylists = async (
   http: AuthHttpClient,
   auth: AuthSession,
   uin?: string,
-): Promise<Dictionary> =>
-  dictionaryOf(
+): Promise<Dictionary> => {
+  const created = await callMusicu(
+    http,
+    auth.device,
+    'get-user-playlists',
+    'music.musicasset.PlaylistBaseRead',
+    'GetPlaylistByUin',
+    { uin: uin || credentialMusicId(auth.credential) },
+    auth.credential,
+  );
+  const createdPlaylists = Array.isArray(created.v_playlist) ? created.v_playlist : [];
+  const favoritePlaylists: unknown[] = [];
+  const encryptedUin = stringOf(auth.credential.encryptUin);
+
+  if (encryptedUin) {
+    const pageSize = 100;
+    let offset = 0;
+    while (offset < 1000) {
+      const favoritePage = await callMusicu(
+        http,
+        auth.device,
+        'get-user-favorite-playlists',
+        'music.musicasset.PlaylistFavRead',
+        'CgiGetPlaylistFavInfo',
+        { uin: encryptedUin, offset, size: pageSize },
+        auth.credential,
+      );
+      const pageItems = Array.isArray(favoritePage.v_list) ? favoritePage.v_list : [];
+      favoritePlaylists.push(...pageItems);
+      offset += pageItems.length;
+      if (
+        pageItems.length === 0 ||
+        (favoritePage.hasmore !== true && numberOf(favoritePage.hasmore) !== 1)
+      )
+        break;
+    }
+  }
+
+  const seen = new Set<string>();
+  const playlists = [...createdPlaylists, ...favoritePlaylists].filter((value) => {
+    const item = dictionaryOf(value);
+    const id = identifierOf(item.tid ?? item.dissid ?? item.id ?? item.dirId ?? item.dirid);
+    if (!id) return true;
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+
+  return dictionaryOf(
+    sanitizePublicValue({
+      ...created,
+      v_playlist: playlists,
+      total: playlists.length,
+      bFinish: true,
+    }),
+  );
+};
+
+const getLikedSongs = async (
+  http: AuthHttpClient,
+  auth: AuthSession,
+  offset = 0,
+  limit = 100,
+): Promise<Dictionary> => {
+  const encryptedUin = stringOf(auth.credential.encryptUin);
+  if (!encryptedUin) throw new Error('Login credential is missing encryptUin');
+  const safeOffset = Math.max(0, Math.floor(offset));
+  const safeLimit = Math.min(100, Math.max(1, Math.floor(limit)));
+  return dictionaryOf(
     sanitizePublicValue(
       await callMusicu(
         http,
         auth.device,
-        'get-user-playlists',
-        'music.musicasset.PlaylistBaseRead',
-        'GetPlaylistByUin',
+        'get-user-liked-songs',
+        'music.srfDissInfo.DissInfo',
+        'CgiGetDiss',
         {
-          uin: uin || String(auth.credential.musicid),
+          disstid: 0,
+          dirid: 201,
+          tag: true,
+          song_begin: safeOffset,
+          song_num: safeLimit,
+          userinfo: true,
+          orderlist: true,
+          enc_host_uin: encryptedUin,
         },
         auth.credential,
       ),
     ),
   );
+};
 
 const terminalState = (state: QrState): boolean =>
   ['confirmed', 'expired', 'failed'].includes(state);
@@ -1481,6 +1568,15 @@ class QrLoginServiceImpl implements QrLoginService {
   public async getUserPlaylists(token?: string, uin?: string): Promise<Dictionary | null> {
     const auth = this.authFor(token);
     return auth ? getPlaylists(this.http, auth, uin) : null;
+  }
+
+  public async getUserLikedSongs(
+    token?: string,
+    offset?: number,
+    limit?: number,
+  ): Promise<Dictionary | null> {
+    const auth = this.authFor(token);
+    return auth ? getLikedSongs(this.http, auth, offset, limit) : null;
   }
 
   public async getMusicPlay(
