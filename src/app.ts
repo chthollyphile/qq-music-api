@@ -17,6 +17,7 @@ import cookie from './util/cookie';
 import { logger, loggerState } from './util/logger';
 import { sanitizeRequestUrl } from './util/observability';
 import { autoOpenExplorer } from './util/openExplorer';
+import { shouldCheckLatestVersion } from './util/updateCheck';
 import './util/colors';
 import pkg from '../package.json';
 import { serverConfig, userInfo } from './config';
@@ -51,7 +52,7 @@ if (!userInfo.cookie) {
   );
 }
 
-if (!isTestEnv) {
+if (shouldCheckLatestVersion()) {
   const versionCheckProcess = exec('npm info qq-music-api version', (err, stdout) => {
     if (!err) {
       const version = stdout.trim();
