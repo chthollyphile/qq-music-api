@@ -231,6 +231,14 @@ const numberOf = (value: unknown): number | undefined => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
+/**
+ * `music.vkey.GetVkey/UrlGetVkey` answers with `midurlinfo` but an empty `sip`, unlike the legacy
+ * web `CgiGetVkey`. Without a fallback the play URL degrades into a bare filename, which the
+ * browser then resolves against its own origin. Measured 2026-08-06 against a real vkey: only
+ * `dl.stream` serves it (HTTP 206 `audio/mpeg`); `isure.stream` and `ws.stream` answer 403.
+ */
+const DEFAULT_STREAM_DOMAIN = 'http://dl.stream.qqmusic.qq.com/';
+
 const MUSIC_FILE_TYPES = {
   m4a: { prefix: 'C400', extension: '.m4a' },
   128: { prefix: 'M500', extension: '.mp3' },
@@ -261,8 +269,10 @@ const getAuthenticatedPlayUrls = async (
     'music.vkey.GetVkey',
     'UrlGetVkey',
     {
+      // filename 一律是兩段識別值：`prefix + songmid + media_mid + extension`。media_mid 缺席時
+      // 用 songmid 補上第二段；只送一段的檔名在 vkey server 仍會拿到 purl，但 CDN 端會 403。
       filename: songmidList.map(
-        (mid) => `${fileType.prefix}${normalizedMediaId || `${mid}${mid}`}${fileType.extension}`,
+        (mid) => `${fileType.prefix}${mid}${normalizedMediaId || mid}${fileType.extension}`,
       ),
       guid,
       songmid: songmidList,
@@ -273,7 +283,8 @@ const getAuthenticatedPlayUrls = async (
     auth.credential,
   );
   const sip = Array.isArray(data.sip) ? data.sip.map(stringOf).filter(Boolean) : [];
-  const domain = sip.find((value) => !value.startsWith('http://ws')) ?? sip[0] ?? '';
+  const domain =
+    sip.find((value) => !value.startsWith('http://ws')) ?? sip[0] ?? DEFAULT_STREAM_DOMAIN;
   const playUrl: Dictionary = {};
   const entries = Array.isArray(data.midurlinfo) ? data.midurlinfo : [];
   for (const entry of entries) {

@@ -50,6 +50,8 @@ interface HarnessOptions {
   wechatNeedsRefresh?: boolean;
   deviceRepository?: DeviceContextRepository;
   qimei?: () => AxiosResponse<unknown>;
+  /** Reproduces the Android `UrlGetVkey` response, which carries `midurlinfo` but no `sip`. */
+  emptyVkeySip?: boolean;
   /** Raw poll bodies served in order; the last one keeps repeating. */
   wechatStatuses?: string[];
   wechatQrPage?: string;
@@ -243,7 +245,7 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
           req_0: {
             code: 0,
             data: {
-              sip: ['https://audio.example.test/'],
+              sip: options.emptyVkeySip ? [] : ['https://audio.example.test/'],
               midurlinfo: [{ songmid, purl: 'fixture.flac' }],
             },
           },
@@ -415,7 +417,7 @@ describe('QQ native QR login service', () => {
     );
     expect(vkeyPayload.module).toBe('music.vkey.GetVkey');
     expect(dictionaryOf(vkeyPayload.param)).toMatchObject({
-      filename: ['F000media-mid.flac'],
+      filename: ['F000song-midmedia-mid.flac'],
       songmid: ['song-mid'],
       songtype: [0],
       uin: '123',
@@ -427,6 +429,30 @@ describe('QQ native QR login service', () => {
         Cookie: 'uin=123; qqmusic_uin=123; qm_keyst=credential-key; qqmusic_key=credential-key',
       }),
     );
+
+    // media_mid 缺席時第二段用 songmid 補上；單段檔名會讓 CDN 對合法 vkey 回 403。
+    await harness.service.getMusicPlay(token, 'song-mid', 'flac');
+    expect(
+      dictionaryOf(
+        dictionaryOf(
+          dictionaryOf(dictionaryOf(jest.mocked(harness.httpPost).mock.calls.at(-1)?.[1])).req_0,
+        ).param,
+      ),
+    ).toMatchObject({ filename: ['F000song-midsong-mid.flac'] });
+  });
+
+  it('should fall back to the stream host when the vkey response carries no sip', async () => {
+    const harness = createProtocolHarness({ emptyVkeySip: true });
+    const { result } = await login(harness.service, harness.emit);
+    const token = result.cookie?.split('=')[1];
+
+    // Without the fallback the URL degrades into a bare `fixture.flac`, which the browser then
+    // resolves against its own origin instead of the CDN.
+    await expect(
+      harness.service.getMusicPlay(token, 'song-mid', 'flac', 'media-mid'),
+    ).resolves.toEqual({
+      'song-mid': { url: 'http://dl.stream.qqmusic.qq.com/fixture.flac', error: false },
+    });
   });
 
   it('should clear auth and close QR listeners on logout', async () => {
