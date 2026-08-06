@@ -269,8 +269,8 @@ const getAuthenticatedPlayUrls = async (
     'music.vkey.GetVkey',
     'UrlGetVkey',
     {
-      // filename 一律是兩段識別值：`prefix + songmid + media_mid + extension`。media_mid 缺席時
-      // 用 songmid 補上第二段；只送一段的檔名在 vkey server 仍會拿到 purl，但 CDN 端會 403。
+      // filename 一律是两段识别值：`prefix + songmid + media_mid + extension`。media_mid 缺席时
+      // 用 songmid 补上第二段；只送一段的文件名在 vkey server 仍会拿到 purl，但 CDN 端会 403。
       filename: songmidList.map(
         (mid) => `${fileType.prefix}${mid}${normalizedMediaId || mid}${fileType.extension}`,
       ),
