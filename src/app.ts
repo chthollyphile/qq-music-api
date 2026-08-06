@@ -1,4 +1,5 @@
 import { exec } from 'node:child_process';
+import type { Server } from 'node:http';
 import path from 'node:path';
 import chalk from 'chalk';
 import Koa from 'koa';
@@ -161,11 +162,14 @@ app.use(async (ctx: Koa.Context, next: Koa.Next) => {
 
 app.use(router.routes()).use(router.allowedMethods());
 
-if (!isTestEnv) {
-  app.listen(serverConfig.port, () => {
-    logger.info(chalk.white(`server running @ http://localhost:${serverConfig.port}`));
-    autoOpenExplorer(serverConfig.port);
-  });
-}
+// 导出 http server 句柄：进程内嵌方（例如 Electron 主进程 require 打包产物）需要等 'listening'
+// 才能确认端口真的绑上，并挂 'error' 监听避免绑定失败变成未处理异常；退出时也要能主动 close。
+// 直接 require 本文件的普通用法不受影响。测试环境不监听，导出 null。
+export const server: Server | null = isTestEnv
+  ? null
+  : app.listen(serverConfig.port, () => {
+      logger.info(chalk.white(`server running @ http://localhost:${serverConfig.port}`));
+      autoOpenExplorer(serverConfig.port);
+    });
 
 export default app;
