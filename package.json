@@ -1,14 +1,20 @@
 {
-  "name": "qq-music-api",
-  "version": "2.0.0",
-  "description": "qq music api, just for study",
-  "main": "index.js",
+  "name": "@yakult-green-tea/qq-music-api",
+  "version": "2.1.0",
+  "description": "QQ 音乐 API 服务，Rain120/qq-music-api 的修改版：新增原生扫码登录（QQ / 微信）、二维码会话取消接口，并可作为 npm 包内嵌进 Docker 或 Electron 主进程。仅供学习使用。",
+  "main": "dist/src/app.js",
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "dev": "AUTO_OPEN_EXPLORER=true ts-node-dev --respawn --transpile-only src/app.ts",
     "start": "node -r ts-node/register/transpile-only src/app.ts",
     "start:dist": "node dist/src/app.js",
     "build": "tsc -p tsconfig.json --noEmit",
-    "build:js": "tsc -p tsconfig.build.json --outDir dist && node scripts/prepare-runtime-assets.js",
+    "clean:dist": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build:js": "npm run clean:dist && tsc -p tsconfig.build.json --outDir dist && node scripts/prepare-runtime-assets.js",
     "docs": "docsify serve docs -p 9611",
     "commit-push": "./scripts/commit-push.sh",
     "changelog": "conventional-changelog -p angular -i CHANGELOG.md -s -r 0",
@@ -20,11 +26,12 @@
     "probe:qq-login": "node scripts/probe-qq-native-qr-login.js",
     "lint": "biome lint ./src",
     "format": "biome format --write ./src",
-    "test": "jest"
+    "test": "jest",
+    "prepublishOnly": "npm run build:js"
   },
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/Rain120/qq-music-api.git"
+    "url": "git+https://github.com/yakult-green-tea/qq-music-api.git"
   },
   "keywords": [
     "QQ音乐",
@@ -32,11 +39,14 @@
     "QQ音乐koa2"
   ],
   "author": "Rain120",
+  "contributors": [
+    "yakult-green-tea"
+  ],
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/Rain120/qq-music-api/issues"
+    "url": "https://github.com/yakult-green-tea/qq-music-api/issues"
   },
-  "homepage": "https://github.com/Rain120/qq-music-api#readme",
+  "homepage": "https://github.com/yakult-green-tea/qq-music-api#readme",
   "lint-staged": {
     "*.ts": [
       "biome check --write"
@@ -87,6 +97,6 @@
     "typescript": "^5.9.3"
   },
   "engines": {
-    "node": ">=7.6.0"
+    "node": ">=20"
   }
 }

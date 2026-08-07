@@ -8,9 +8,11 @@ const distPublicDir = path.join(distDir, 'public');
 const pkg = JSON.parse(fs.readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
 
 fs.mkdirSync(distDir, { recursive: true });
+// dist/src/app.js 里的 `require('../package.json')` 落在这个文件上：
+// name 与 version 都要带，版本检查会用 name 查 registry（不能查上游的包名）。
 fs.writeFileSync(
   path.join(distDir, 'package.json'),
-  `${JSON.stringify({ version: pkg.version }, null, 2)}\n`,
+  `${JSON.stringify({ name: pkg.name, version: pkg.version }, null, 2)}\n`,
   'utf8',
 );
 

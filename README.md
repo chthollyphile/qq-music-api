@@ -18,6 +18,30 @@
 
 > ⚠️ 当前代码仅供学习，不可做商业用途。
 
+### 关于本 fork
+
+本包是 [Rain120/qq-music-api](https://github.com/Rain120/qq-music-api) 的修改版，以 `@yakult-green-tea/qq-music-api` 的名义发布到 npm，沿用原项目的 MIT 许可（`LICENSE` 保留原作者的著作权声明，未作改动）。
+
+相对上游的差异：
+
+- **原生扫码登录**：`/login/qr/key`、`/login/qr/create`、`/login/qr/check`、`/login/qr/cancel`，支持 QQ 音乐 App（MQTT over WSS）与微信两种扫码方式。
+- **二维码会话可取消、可抢占**：关闭登录弹窗时可显式取消会话；即使取消请求没送达，尚未被扫码的旧会话也会被下一次登录接管，不会在 3 分钟 TTL 内一直返回 409。
+- **可作为 npm 包内嵌**：`main` 指向编译产物 `dist/src/app.js`，Docker 镜像与 Electron 主进程都能直接 `require()`，无需 vendored 源码或额外打包步骤。
+- **启动时的版本检查默认关闭**：被当作依赖 `require()` 时不应该在 import 期 spawn `npm`，需要时用 `QQ_ENABLE_UPDATE_CHECK=true` 显式开启。
+
+#### 作为 npm 包使用
+
+```sh
+npm i @yakult-green-tea/qq-music-api
+
+# 直接跑编译产物
+PORT=3200 node node_modules/@yakult-green-tea/qq-music-api/dist/src/app.js
+```
+
+`require()` 该包会在 import 期直接 `app.listen()`，并导出 http server 句柄 `server`：嵌入方可以等 `listening` 事件确认端口真的绑上、挂 `error` 监听避免绑定失败变成未处理异常，退出时主动 `close()`。因为 `require` 有模块缓存，同一进程内只应该 `require()` 一次。
+
+常用环境变量：`PORT`（默认 `3200`）、`QQ_AUTH_STATE_PATH`（设备标识持久化路径）、`QQ_ENABLE_UPDATE_CHECK`、`AUTO_OPEN_EXPLORER`。
+
 ### API结构图
 
 > 目前暂时没有时间做登录模块的接口，欢迎各位大佬给我`PR`, 阿里嘎多

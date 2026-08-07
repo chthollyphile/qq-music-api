@@ -54,7 +54,8 @@ if (!userInfo.cookie) {
 }
 
 if (shouldCheckLatestVersion()) {
-  const versionCheckProcess = exec('npm info qq-music-api version', (err, stdout) => {
+  // 查本包自己的名字：fork 之后再查上游的 `qq-music-api` 只会得到无关的版本号。
+  const versionCheckProcess = exec(`npm info ${pkg.name} version`, (err, stdout) => {
     if (!err) {
       const version = stdout.trim();
       if (pkg.version < version) {
