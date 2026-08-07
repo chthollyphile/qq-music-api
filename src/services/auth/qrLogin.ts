@@ -133,6 +133,7 @@ export interface QrLoginService {
   createSession(channel?: QrLoginChannel): Promise<string>;
   createQr(key: string): Promise<string>;
   checkQr(key: string): QrCheckResult;
+  cancelSession(key: string): void;
   getLoginStatus(token?: string): Promise<Dictionary | null>;
   getUserDetail(token?: string): Promise<Dictionary | null>;
   getUserPlaylists(token?: string, uin?: string): Promise<Dictionary | null>;
@@ -1261,6 +1262,14 @@ const getLikedSongs = async (
 const terminalState = (state: QrState): boolean =>
   ['confirmed', 'expired', 'failed'].includes(state);
 
+/**
+ * States where the user is already acting on this QR from their phone. A second login attempt must
+ * not pull the rug out from under that, so these keep the 409; every other non-terminal state is an
+ * abandoned code and is preemptible. `confirmed` is deliberately absent: it is terminal, it never
+ * blocked a new session, and blocking it would 409 anyone who signs out and back in inside the TTL.
+ */
+const confirmingState = (state: QrState): boolean => ['scanned', 'exchanging'].includes(state);
+
 /** Keeps whatever opaque number the upstream gave us, whichever channel produced the failure. */
 const upstreamCodeOf = (error: unknown): number | undefined => {
   if (error instanceof QqProtocolError) return error.upstreamCode;
@@ -1320,8 +1329,23 @@ class QrLoginServiceImpl implements QrLoginService {
     return delay;
   }
 
-  private activeQrExists(): boolean {
-    return Array.from(this.qrSessions.values()).some((session) => !terminalState(session.state));
+  private confirmingQrExists(): boolean {
+    return Array.from(this.qrSessions.values()).some((session) => confirmingState(session.state));
+  }
+
+  /**
+   * Closes and drops the codes nobody is scanning. Without this a dialog that was opened and shut
+   * without a scan would hold the slot for the whole QR TTL, so the next login attempt — including
+   * the one after a hard app restart, where no cancel could ever be sent — got a 409 it could not
+   * clear by retrying.
+   */
+  private discardPreemptibleSessions(): void {
+    for (const [key, session] of this.qrSessions) {
+      if (terminalState(session.state) || confirmingState(session.state)) continue;
+      session.listener?.close();
+      this.qrSessions.delete(key);
+      logger.info('qq-auth.qr-session-preempted', { loginChannel: session.channel });
+    }
   }
 
   private sessionFor(key: string): QrSession {
@@ -1457,8 +1481,10 @@ class QrLoginServiceImpl implements QrLoginService {
     const retryAfterMs = Math.max(0, this.nextQrAllowedAt - this.now());
     if (retryAfterMs > 0)
       throw new QrLoginServiceError('QR login is temporarily backed off', 429, retryAfterMs);
-    if (this.creatingSession || this.activeQrExists())
+    // The concurrency lock and a QR that is mid-confirmation are the only real 409s left.
+    if (this.creatingSession || this.confirmingQrExists())
       throw new QrLoginServiceError('Another QR login is already active', 409);
+    this.discardPreemptibleSessions();
     this.creatingSession = true;
     try {
       const device = this.deviceStore.get();
@@ -1480,6 +1506,23 @@ class QrLoginServiceImpl implements QrLoginService {
     } finally {
       this.creatingSession = false;
     }
+  }
+
+  /**
+   * Releases one QR session by key. Keyed on purpose: clearing every session would let one client
+   * closing its dialog kill a QR another client is confirming on their phone.
+   */
+  public cancelSession(key: string): void {
+    const session = this.qrSessions.get(key);
+    // Idempotent by contract. The client cancels on dialog close as fire-and-forget, so an unknown
+    // or already expired key is a success, never a 404.
+    if (!session) return;
+    // A confirmed session is left to expire on its own: the credential already reached authSessions
+    // and a poll still in flight has to keep reading 803 rather than flip a login into "expired".
+    if (session.state === 'confirmed') return;
+    session.listener?.close();
+    this.qrSessions.delete(key);
+    logger.info('qq-auth.qr-session-canceled', { loginChannel: session.channel });
   }
 
   private sessionHttp(session: QrSession): AuthHttpClient {

@@ -2,6 +2,7 @@ const mockQrLoginService = {
   createSession: jest.fn(),
   createQr: jest.fn(),
   checkQr: jest.fn(),
+  cancelSession: jest.fn(),
   getLoginStatus: jest.fn(),
   getUserDetail: jest.fn(),
   getUserLikedSongs: jest.fn(),
@@ -68,14 +69,41 @@ describe('QQ login controllers', () => {
     expect(mockQrLoginService.createSession).not.toHaveBeenCalled();
   });
 
-  it('should reject QR create and check requests without a key', async () => {
+  it('should reject QR create, check, and cancel requests without a key', async () => {
     const createResponse = await request(server).get('/login/qr/create');
     const checkResponse = await request(server).get('/login/qr/check');
+    const cancelResponse = await request(server).get('/login/qr/cancel');
 
     expect(createResponse.status).toBe(400);
     expect(checkResponse.status).toBe(400);
+    expect(cancelResponse.status).toBe(400);
     expect(createResponse.body).toMatchObject({ code: 400 });
     expect(checkResponse.body).toMatchObject({ code: 400 });
+    expect(cancelResponse.body).toMatchObject({ code: 400 });
+    expect(mockQrLoginService.cancelSession).not.toHaveBeenCalled();
+  });
+
+  it('should cancel one QR session by key and stay idempotent for unknown keys', async () => {
+    const first = await request(server).get('/login/qr/cancel').query({ key: 'qr-key' });
+    const repeated = await request(server).get('/login/qr/cancel').query({ key: 'never-issued' });
+
+    expect(first.status).toBe(200);
+    expect(repeated.status).toBe(200);
+    expect(first.body).toEqual({ code: 200 });
+    expect(repeated.body).toEqual({ code: 200 });
+    expect(mockQrLoginService.cancelSession).toHaveBeenNthCalledWith(1, 'qr-key');
+    expect(mockQrLoginService.cancelSession).toHaveBeenNthCalledWith(2, 'never-issued');
+  });
+
+  it('should keep the cancelled QR key out of the request logs', async () => {
+    const loggerSpy = jest.spyOn(logger, 'info').mockImplementation(() => undefined);
+
+    await request(server).get('/login/qr/cancel').query({ key: 'log-secret-cancel-key' });
+
+    const logged = JSON.stringify(loggerSpy.mock.calls);
+    expect(logged).not.toContain('log-secret-cancel-key');
+    expect(logged).toContain('MASKED');
+    loggerSpy.mockRestore();
   });
 
   it('should return Retry-After when QR creation is backed off', async () => {

@@ -12,6 +12,7 @@ router.get('/user/setCookie', context.setCookie);
 router.get('/login/qr/key', context.qrKey);
 router.get('/login/qr/create', context.qrCreate);
 router.get('/login/qr/check', context.qrCheck);
+router.get('/login/qr/cancel', context.qrCancel);
 router.get('/login/status', context.loginStatus);
 router.get('/logout', context.logout);
 router.get('/user/detail', context.userDetail);

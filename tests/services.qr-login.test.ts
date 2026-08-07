@@ -346,13 +346,56 @@ describe('QQ native QR login service', () => {
     expect(confirmed.cookie).not.toContain('mqtt-key');
   });
 
-  it('should reject a parallel active QR session', async () => {
+  it('should reject a parallel QR session that is already being confirmed on the phone', async () => {
     const harness = createProtocolHarness();
-    await harness.service.createSession();
+    const key = await harness.service.createSession();
+    await harness.service.createQr(key);
+    harness.emit({ type: 'scanned', payload: {} });
 
     await expect(harness.service.createSession()).rejects.toEqual(
       expect.objectContaining({ httpStatus: 409 }),
     );
+  });
+
+  it('should preempt an unscanned session so a reopened dialog is not stuck behind the TTL', async () => {
+    const harness = createProtocolHarness();
+    const first = await harness.service.createSession();
+    await harness.service.createQr(first);
+
+    // No cancel is sent here on purpose: this is the hard-quit case, where the client never got
+    // the chance to release the session it left behind.
+    await expect(harness.service.createSession()).resolves.toEqual(expect.any(String));
+    expect(harness.wasClosed()).toBe(true);
+  });
+
+  it('should release one session by key and let the next login start immediately', async () => {
+    const harness = createProtocolHarness();
+    const key = await harness.service.createSession();
+    await harness.service.createQr(key);
+
+    harness.service.cancelSession(key);
+
+    expect(harness.wasClosed()).toBe(true);
+    expect(harness.service.checkQr(key)).toMatchObject({ code: 800 });
+    await expect(harness.service.createSession()).resolves.toEqual(expect.any(String));
+  });
+
+  it('should treat cancelling an unknown or already cancelled key as a success', async () => {
+    const harness = createProtocolHarness();
+    const key = await harness.service.createSession();
+
+    expect(() => harness.service.cancelSession('never-issued')).not.toThrow();
+    expect(() => harness.service.cancelSession(key)).not.toThrow();
+    expect(() => harness.service.cancelSession(key)).not.toThrow();
+  });
+
+  it('should keep a confirmed session readable after a late cancel', async () => {
+    const harness = createProtocolHarness();
+    const { key } = await login(harness.service, harness.emit);
+
+    harness.service.cancelSession(key);
+
+    expect(harness.service.checkQr(key)).toMatchObject({ code: 803 });
   });
 
   it('should preserve upstream 50006 and apply a retry backoff', async () => {

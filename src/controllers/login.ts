@@ -105,6 +105,20 @@ export const qrCheck = async (ctx: Context): Promise<void> => {
   ctx.body = result;
 };
 
+export const qrCancel = async (ctx: Context): Promise<void> => {
+  const { key } = getTypedQuery<LoginQuery>(ctx);
+  if (!key) {
+    ctx.status = 400;
+    ctx.body = { code: 400, message: 'key is required' };
+    return;
+  }
+  // Always 200: callers cancel on dialog close without waiting for the answer, so an unknown or
+  // already expired key must not surface as an error they would have to handle.
+  qrLoginService.cancelSession(String(key));
+  ctx.status = 200;
+  ctx.body = { code: 200 };
+};
+
 export const loginStatus = async (ctx: Context): Promise<void> => {
   const profile = await qrLoginService.getLoginStatus(getAuthToken(ctx));
   ctx.status = 200;

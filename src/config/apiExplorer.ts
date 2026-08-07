@@ -84,6 +84,7 @@ export const apiExplorerBaseRoutes: ApiExplorerBaseRoute[] = [
   { name: 'qrKey', method: 'GET', routePath: '/login/qr/key', category: 'Login' },
   { name: 'qrCreate', method: 'GET', routePath: '/login/qr/create', category: 'Login' },
   { name: 'qrCheck', method: 'GET', routePath: '/login/qr/check', category: 'Login' },
+  { name: 'qrCancel', method: 'GET', routePath: '/login/qr/cancel', category: 'Login' },
   { name: 'loginStatus', method: 'GET', routePath: '/login/status', category: 'Login' },
   { name: 'logout', method: 'GET', routePath: '/logout', category: 'Login' },
   { name: 'userDetail', method: 'GET', routePath: '/user/detail', category: 'User' },
@@ -264,6 +265,17 @@ export const apiExplorerOverrides: Record<string, Partial<ApiExplorerEndpoint>> 
   },
   qrCheck: {
     description: 'Poll QR state: 800 expired, 801 waiting, 802 scanned, or 803 confirmed.',
+    queryParams: [
+      {
+        key: 'key',
+        label: 'QR Key',
+        required: true,
+        description: 'Opaque key returned by /login/qr/key.',
+      },
+    ],
+  },
+  qrCancel: {
+    description: 'Release one QR login session by key. Unknown keys still return 200.',
     queryParams: [
       {
         key: 'key',
