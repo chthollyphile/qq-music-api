@@ -126,7 +126,7 @@ describe('QQ login controllers', () => {
       message: 'Authorization login successful',
       cookie: 'qqmusic_session=opaque-token',
     });
-    mockQrLoginService.getLoginStatus.mockResolvedValue({ musicid: 123, nickname: '我的 QQ 帳號' });
+    mockQrLoginService.getLoginStatus.mockResolvedValue({ musicid: 123, nickname: '我的 QQ 账号' });
     const agent = request.agent(server);
 
     const checkResponse = await agent.get('/login/qr/check').query({ key: 'qr-key' });
@@ -137,7 +137,7 @@ describe('QQ login controllers', () => {
     expect(checkResponse.headers['set-cookie'][0].toLowerCase()).toContain('httponly');
     expect(statusResponse.body).toEqual({
       code: 200,
-      data: { profile: { musicid: 123, nickname: '我的 QQ 帳號' } },
+      data: { profile: { musicid: 123, nickname: '我的 QQ 账号' } },
     });
     expect(mockQrLoginService.getLoginStatus).toHaveBeenCalledWith('opaque-token');
   });

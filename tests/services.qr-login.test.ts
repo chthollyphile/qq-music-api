@@ -163,7 +163,7 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
                 refresh_key: 'wechat-refresh-key-2',
                 unionid: 'wechat-unionid',
                 encryptUin: 'wechat-encrypt-uin',
-                nick: '我的微信帳號',
+                nick: '我的微信账号',
               },
             },
           } as T);
@@ -182,7 +182,7 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
                 refresh_key: 'wechat-refresh-key',
                 unionid: 'wechat-unionid',
                 encryptUin: 'wechat-encrypt-uin',
-                nick: '我的微信帳號',
+                nick: '我的微信账号',
               },
             },
           } as T);
@@ -208,7 +208,7 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
                 identify: '',
                 celebrityInfo: { uin: 0 },
                 info: {
-                  nick: '我的 QQ 帳號',
+                  nick: '我的 QQ 账号',
                   logo: 'https://thirdqq.example.test/avatar',
                   gender: 0,
                 },
@@ -221,7 +221,7 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
             code: 0,
             data: {
               musicid: comm.tmeLoginType === 1 ? 456 : 123,
-              nickname: comm.tmeLoginType === 1 ? '我的微信帳號' : '我的 QQ 帳號',
+              nickname: comm.tmeLoginType === 1 ? '我的微信账号' : '我的 QQ 账号',
               musickey: 'must-not-leak',
             },
           },
@@ -493,7 +493,7 @@ describe('QQ native QR login service', () => {
     const token = result.cookie?.split('=')[1];
 
     await expect(harness.service.getLoginStatus(token)).resolves.toMatchObject({
-      nickname: '我的 QQ 帳號',
+      nickname: '我的 QQ 账号',
     });
     await expect(harness.service.getLoginStatus(token)).resolves.not.toHaveProperty('musickey');
     await expect(harness.service.getUserDetail(token)).resolves.toMatchObject({ musicid: 123 });
@@ -514,7 +514,7 @@ describe('QQ native QR login service', () => {
     const profile = await harness.service.getLoginStatus(token);
     expect(profile).toMatchObject({
       musicid: 123,
-      info: { nick: '我的 QQ 帳號', logo: 'https://thirdqq.example.test/avatar' },
+      info: { nick: '我的 QQ 账号', logo: 'https://thirdqq.example.test/avatar' },
     });
     expect(profile).not.toHaveProperty('musickey');
   });
@@ -554,7 +554,7 @@ describe('QQ native QR login service', () => {
       }),
     );
 
-    // media_mid 缺席時第二段用 songmid 補上；單段檔名會讓 CDN 對合法 vkey 回 403。
+    // media_mid 缺席时第二段用 songmid 补上；单段文件名会让 CDN 对合法 vkey 回 403。
     await harness.service.getMusicPlay(token, 'song-mid', 'flac');
     expect(
       dictionaryOf(
@@ -903,7 +903,7 @@ describe('QQ login channel routing', () => {
     const profile = await harness.service.getLoginStatus(token);
     expect(profile).toMatchObject({
       musicid: 456,
-      nickname: '我的微信帳號',
+      nickname: '我的微信账号',
     });
     for (const secret of [
       'musickey',
