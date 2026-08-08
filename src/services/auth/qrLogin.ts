@@ -1092,9 +1092,18 @@ const publicProfileFromCredential = (credential: QqCredential): Dictionary => {
   };
 };
 
+/**
+ * `GetLoginUserInfo` never carries an account id. Measured against a real session, its top-level
+ * keys are `errMsg` / `identify` / `info` / `celebrityInfo` plus operational slots, and every
+ * account field lives under the nested `info` — there is no `musicid` or `uin` anywhere in it.
+ * The credential-derived profile is therefore layered underneath as a default instead of only
+ * standing in when the call fails. The two key sets are disjoint, so a successful reply still
+ * wins on every field it does answer with.
+ */
 const getLoginProfile = async (http: AuthHttpClient, auth: AuthSession): Promise<Dictionary> => {
+  const credentialProfile = publicProfileFromCredential(auth.credential);
   try {
-    return await getLoginUser(http, auth);
+    return { ...credentialProfile, ...(await getLoginUser(http, auth)) };
   } catch (error) {
     if (
       auth.credential.loginType !== WECHAT_LOGIN_TYPE ||
@@ -1103,7 +1112,7 @@ const getLoginProfile = async (http: AuthHttpClient, auth: AuthSession): Promise
       !CREDENTIAL_REFRESH_SAFETY_CODES.has(error.upstreamCode)
     )
       throw error;
-    return publicProfileFromCredential(auth.credential);
+    return credentialProfile;
   }
 };
 

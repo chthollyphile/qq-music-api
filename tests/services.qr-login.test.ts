@@ -52,6 +52,11 @@ interface HarnessOptions {
   qimei?: () => AxiosResponse<unknown>;
   /** Reproduces the Android `UrlGetVkey` response, which carries `midurlinfo` but no `sip`. */
   emptyVkeySip?: boolean;
+  /**
+   * Reproduces the measured `GetLoginUserInfo` shape: no account id at all, every account field
+   * nested under `info`. The convenience fixture above is not what the real endpoint answers.
+   */
+  nestedProfileOnly?: boolean;
   /** Raw poll bodies served in order; the last one keeps repeating. */
   wechatStatuses?: string[];
   wechatQrPage?: string;
@@ -189,6 +194,23 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
         const comm = dictionaryOf(dictionaryOf(payload).comm);
         if (options.wechatNeedsRefresh && comm.tmeLoginType === 1)
           return response({ code: 0, req_0: { code: 1000, data: {} } } as T);
+        if (options.nestedProfileOnly)
+          return response({
+            code: 0,
+            req_0: {
+              code: 0,
+              data: {
+                errMsg: '',
+                identify: '',
+                celebrityInfo: { uin: 0 },
+                info: {
+                  nick: '我的 QQ 帳號',
+                  logo: 'https://thirdqq.example.test/avatar',
+                  gender: 0,
+                },
+              },
+            },
+          } as T);
         return response({
           code: 0,
           req_0: {
@@ -436,6 +458,21 @@ describe('QQ native QR login service', () => {
     });
     expect(harness.calls).toContain('GetLoginUserInfo');
     expect(harness.calls).toContain('GetPlaylistByUin');
+  });
+
+  it('should keep the account id when the profile reply carries none', async () => {
+    const harness = createProtocolHarness({ nestedProfileOnly: true });
+    const { result } = await login(harness.service, harness.emit);
+    const token = result.cookie?.split('=')[1];
+
+    // The real reply nests every account field under `info` and has no id, so the id can only
+    // come from the credential underneath — while `info` still has to survive untouched.
+    const profile = await harness.service.getLoginStatus(token);
+    expect(profile).toMatchObject({
+      musicid: 123,
+      info: { nick: '我的 QQ 帳號', logo: 'https://thirdqq.example.test/avatar' },
+    });
+    expect(profile).not.toHaveProperty('musickey');
   });
 
   it('should resolve music URLs through the authenticated auth HTTP client', async () => {
