@@ -57,6 +57,10 @@ interface HarnessOptions {
    * nested under `info`. The convenience fixture above is not what the real endpoint answers.
    */
   nestedProfileOnly?: boolean;
+  /** Whole favourite-album collection; the CGI stub slices the requested `sin`..`ein` out of it. */
+  favoriteAlbums?: Record<string, unknown>[];
+  /** Non-zero makes the favourite-album CGI reject the call, the way it does without a cookie. */
+  favoriteAlbumCode?: number;
   /** Raw poll bodies served in order; the last one keeps repeating. */
   wechatStatuses?: string[];
   wechatQrPage?: string;
@@ -276,9 +280,48 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
       throw new Error(`Unexpected method: ${method}`);
     },
   );
+  /**
+   * Only the favourite-album collection is read over a plain CGI instead of musicu, so this
+   * stub serves that one URL. `sin`/`ein` bound an inclusive range, which is what it slices by.
+   */
+  const favoriteAlbumRequests: AxiosRequestConfig[] = [];
+  const requestStub = jest.fn(async (config: AxiosRequestConfig) => {
+    const url = String(config.url);
+    if (!url.includes('fcg_get_profile_order_asset.fcg')) {
+      throw new Error(`Unexpected auth request URL: ${url}`);
+    }
+    favoriteAlbumRequests.push(config);
+    if (options.favoriteAlbumCode) return response({ code: options.favoriteAlbumCode });
+    const params = dictionaryOf(config.params);
+    const sin = Number(params.sin ?? 0);
+    const ein = Number(params.ein ?? 0);
+    const albums = options.favoriteAlbums ?? [
+      {
+        albumid: 88971,
+        albummid: '000MkMni19ClKG',
+        albumname: '范特西',
+        singermid: '0025NhlN2yWrP4',
+      },
+      {
+        albumid: 88972,
+        albummid: '002J4UUk29y8BY',
+        albumname: '八度空間',
+        singermid: '0025NhlN2yWrP4',
+      },
+    ];
+    return response({
+      code: 0,
+      subcode: 0,
+      data: {
+        albumlist: albums.slice(sin, ein + 1),
+        totalalbum: albums.length,
+        has_more: ein + 1 < albums.length ? 1 : 0,
+      },
+    });
+  });
   const http: AuthHttpClient = {
     getCookieHeader: () => '',
-    request: jest.fn(),
+    request: requestStub as unknown as AuthHttpClient['request'],
     post: post as unknown as AuthHttpClient['post'],
   };
   let emit: ((event: TestQrEvent) => void) | undefined;
@@ -308,6 +351,7 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
     calls,
     comms,
     httpPost: post,
+    favoriteAlbumRequests,
     deviceRepository,
     service,
     wechatRequests: wechat.requests,
@@ -748,6 +792,105 @@ describe('QQ login channel routing', () => {
       song_num: 100,
       enc_host_uin: 'wechat-encrypt-uin',
     });
+  });
+
+  it('should read favourite albums over the profile-asset CGI with an inclusive range', async () => {
+    const harness = createProtocolHarness();
+    const { result } = await login(harness.service, harness.emit);
+    const token = result.cookie?.split('=')[1];
+
+    await expect(harness.service.getUserAlbums(token, 0, 20)).resolves.toMatchObject({
+      albumlist: [{ albumid: 88971, albummid: '000MkMni19ClKG' }, { albumid: 88972 }],
+      totalalbum: 2,
+      has_more: 0,
+    });
+
+    const [config] = harness.favoriteAlbumRequests;
+    expect(String(config.url)).toContain('fcg_get_profile_order_asset.fcg');
+    expect(config.method).toBe('GET');
+    // `ein` is the last index wanted, not a count: a 20-row page ends at 19.
+    expect(dictionaryOf(config.params)).toMatchObject({
+      reqtype: 2,
+      userid: '123',
+      sin: 0,
+      ein: 19,
+    });
+    // The CGI only answers for a logged-in caller, so the credential has to ride along.
+    const cookie = String(dictionaryOf(config.headers).Cookie);
+    expect(cookie).toContain('qqmusic_uin=123');
+    expect(cookie).toContain('qm_keyst=credential-key');
+  });
+
+  it('should page favourite albums and report whether more remain', async () => {
+    const harness = createProtocolHarness();
+    const { result } = await login(harness.service, harness.emit);
+    const token = result.cookie?.split('=')[1];
+
+    await expect(harness.service.getUserAlbums(token, 0, 1)).resolves.toMatchObject({
+      albumlist: [{ albumid: 88971 }],
+      totalalbum: 2,
+      has_more: 1,
+    });
+    await expect(harness.service.getUserAlbums(token, 1, 1)).resolves.toMatchObject({
+      albumlist: [{ albumid: 88972 }],
+      has_more: 0,
+    });
+
+    // A one-row page is `sin === ein`, which only holds if the range really is inclusive.
+    expect(dictionaryOf(harness.favoriteAlbumRequests[0]?.params)).toMatchObject({
+      sin: 0,
+      ein: 0,
+    });
+    expect(dictionaryOf(harness.favoriteAlbumRequests[1]?.params)).toMatchObject({
+      sin: 1,
+      ein: 1,
+    });
+  });
+
+  it('should answer with an empty favourite-album collection instead of failing', async () => {
+    const harness = createProtocolHarness({ favoriteAlbums: [] });
+    const { result } = await login(harness.service, harness.emit);
+    const token = result.cookie?.split('=')[1];
+
+    await expect(harness.service.getUserAlbums(token, 0, 20)).resolves.toMatchObject({
+      albumlist: [],
+      totalalbum: 0,
+    });
+  });
+
+  it('should read favourite albums for a WeChat credential too', async () => {
+    const harness = createProtocolHarness();
+    const key = await harness.service.createSession('wechat');
+    await harness.service.createQr(key);
+    await waitFor(() => harness.service.checkQr(key).code === 803);
+    const token = harness.service.checkQr(key).cookie?.split('=')[1];
+
+    await expect(harness.service.getUserAlbums(token, 0, 20)).resolves.toMatchObject({
+      totalalbum: 2,
+    });
+    // The WeChat channel carries its own account id; the CGI is addressed by that, not by a
+    // QQ number, and its cookie has to be the WeChat-issued key.
+    const [config] = harness.favoriteAlbumRequests;
+    expect(dictionaryOf(config.params)).toMatchObject({ userid: '456' });
+    expect(String(dictionaryOf(config.headers).Cookie)).toContain('qm_keyst=wechat-credential-key');
+  });
+
+  it('should surface a rejected favourite-album call instead of reporting an empty collection', async () => {
+    // 4000 is what the CGI answers when it does not accept the caller as logged in. Reporting
+    // that as "no favourites" would be indistinguishable from a genuinely empty collection.
+    const harness = createProtocolHarness({ favoriteAlbumCode: 4000 });
+    const { result } = await login(harness.service, harness.emit);
+    const token = result.cookie?.split('=')[1];
+
+    await expect(harness.service.getUserAlbums(token, 0, 20)).rejects.toThrow(
+      /get-user-favorite-albums/,
+    );
+  });
+
+  it('should answer with null for an unknown token so the route can require a login', async () => {
+    const harness = createProtocolHarness();
+    await expect(harness.service.getUserAlbums('unknown-token', 0, 20)).resolves.toBeNull();
+    expect(harness.favoriteAlbumRequests).toHaveLength(0);
   });
 
   it('should refresh a WeChat credential rejected with safe code 1000 before confirming', async () => {

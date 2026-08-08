@@ -89,6 +89,7 @@ export const apiExplorerBaseRoutes: ApiExplorerBaseRoute[] = [
   { name: 'logout', method: 'GET', routePath: '/logout', category: 'Login' },
   { name: 'userDetail', method: 'GET', routePath: '/user/detail', category: 'User' },
   { name: 'getUserPlaylist', method: 'GET', routePath: '/user/playlist', category: 'User' },
+  { name: 'getUserAlbums', method: 'GET', routePath: '/user/albums', category: 'User' },
   { name: 'getUserLikedSongs', method: 'GET', routePath: '/user/liked-songs', category: 'User' },
   { name: 'getDownloadQQMusic', method: 'GET', routePath: '/downloadQQMusic', category: 'Song' },
   { name: 'getHotkey', method: 'GET', routePath: '/getHotkey', category: 'Search' },
@@ -302,6 +303,13 @@ export const apiExplorerOverrides: Record<string, Partial<ApiExplorerEndpoint>> 
         label: 'User ID',
         description: 'Defaults to the authenticated QQ Music account.',
       },
+    ],
+  },
+  getUserAlbums: {
+    description: 'Get the albums the authenticated user has added to their favourites.',
+    queryParams: [
+      { key: 'offset', label: 'Offset', description: 'Zero-based album offset.' },
+      { key: 'limit', label: 'Limit', description: 'Page size, up to 100.' },
     ],
   },
   getUserLikedSongs: {

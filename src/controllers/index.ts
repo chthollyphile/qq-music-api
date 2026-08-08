@@ -32,6 +32,7 @@ import getSongListDetail from './getSongListDetail';
 import getSongLists from './getSongLists';
 import getTicketInfo from './getTicketInfo';
 import getTopLists from './getTopLists';
+import getUserAlbums from './getUserAlbums';
 import getUserLikedSongs from './getUserLikedSongs';
 import getUserPlaylist from './getUserPlaylist';
 import { loginStatus, logout, qrCancel, qrCheck, qrCreate, qrKey, userDetail } from './login';
@@ -80,6 +81,7 @@ export default {
   loginStatus: withControllerLogging('loginStatus', loginStatus),
   logout: withControllerLogging('logout', logout),
   userDetail: withControllerLogging('userDetail', userDetail),
+  getUserAlbums: withControllerLogging('getUserAlbums', getUserAlbums),
   getUserLikedSongs: withControllerLogging('getUserLikedSongs', getUserLikedSongs),
   getUserPlaylist: withControllerLogging('getUserPlaylist', getUserPlaylist),
 };

@@ -137,6 +137,7 @@ export interface QrLoginService {
   getLoginStatus(token?: string): Promise<Dictionary | null>;
   getUserDetail(token?: string): Promise<Dictionary | null>;
   getUserPlaylists(token?: string, uin?: string): Promise<Dictionary | null>;
+  getUserAlbums(token?: string, offset?: number, limit?: number): Promise<Dictionary | null>;
   getUserLikedSongs(token?: string, offset?: number, limit?: number): Promise<Dictionary | null>;
   getMusicPlay(
     token: string | undefined,
@@ -867,6 +868,17 @@ const ensureQimei = async (
   return true;
 };
 
+/** The cookie form of a credential, accepted by both the musicu RPC face and the legacy CGIs. */
+const credentialCookieHeader = (credential: QqCredential): string => {
+  const musicid = identifierOf(credential.str_musicid) || String(credential.musicid);
+  return [
+    `uin=${musicid}`,
+    `qqmusic_uin=${musicid}`,
+    `qm_keyst=${credential.musickey}`,
+    `qqmusic_key=${credential.musickey}`,
+  ].join('; ');
+};
+
 const callMusicu = async (
   http: AuthHttpClient,
   device: AndroidDevice,
@@ -877,17 +889,7 @@ const callMusicu = async (
   credential?: QqCredential,
   overrides: Dictionary = {},
 ): Promise<Dictionary> => {
-  const musicid = credential
-    ? identifierOf(credential.str_musicid) || String(credential.musicid)
-    : '';
-  const credentialCookies = credential
-    ? [
-        `uin=${musicid}`,
-        `qqmusic_uin=${musicid}`,
-        `qm_keyst=${credential.musickey}`,
-        `qqmusic_key=${credential.musickey}`,
-      ].join('; ')
-    : '';
+  const credentialCookies = credential ? credentialCookieHeader(credential) : '';
   const response = await http.post<unknown>(
     MUSICU_URL,
     {
@@ -1232,6 +1234,62 @@ const getPlaylists = async (
       bFinish: true,
     }),
   );
+};
+
+const FAVORITE_ASSET_URL = 'https://c.y.qq.com/fav/fcgi-bin/fcg_get_profile_order_asset.fcg';
+/** `2` selects favourite albums on this CGI; `3` selects favourite playlists. */
+const FAVORITE_ALBUM_REQUEST_TYPE = 2;
+
+/**
+ * Favourite albums are the one user collection the musicu RPC face does not answer with.
+ * Measured 2026-08-08 against a live session that had two favourited albums:
+ * `music.musicasset.AlbumFavRead/CgiGetAlbumFavInfo` does exist, but always replies `80000`
+ * with a zero-filled struct — under 13 param shapes (`{}` included) and 4 client identities.
+ * The code therefore never meant "no rows", and no sibling method answers either
+ * (`CgiGetAlbumFavList` is `40000`, `music.musicasset.SingerFavRead` is `500003`).
+ *
+ * This legacy profile-asset CGI does answer, and it takes the native QR credential as-is: the
+ * same call with `reqtype=3` returns exactly the favourite playlists musicu reports, and falls
+ * to `4000` when the cookie is withheld — so it is reading the login state, not public data.
+ *
+ * `sin`/`ein` bound an inclusive range, not an offset and a count.
+ */
+const getFavoriteAlbums = async (
+  http: AuthHttpClient,
+  auth: AuthSession,
+  offset = 0,
+  limit = 20,
+): Promise<Dictionary> => {
+  const safeOffset = Math.max(0, Math.floor(offset));
+  const safeLimit = Math.min(100, Math.max(1, Math.floor(limit)));
+  const response = await http.request<unknown>({
+    url: FAVORITE_ASSET_URL,
+    method: 'GET',
+    params: {
+      ct: 20,
+      cid: 205360956,
+      userid: credentialMusicId(auth.credential),
+      reqtype: FAVORITE_ALBUM_REQUEST_TYPE,
+      sin: safeOffset,
+      ein: safeOffset + safeLimit - 1,
+      format: 'json',
+    },
+    headers: {
+      Referer: 'https://y.qq.com/',
+      Cookie: credentialCookieHeader(auth.credential),
+    },
+  });
+  const body = dictionaryOf(response.data);
+  const code = numberOf(body.code) ?? 0;
+  logger.info('qq-auth.upstream-result', {
+    phase: 'get-user-favorite-albums',
+    httpStatus: response.status,
+    globalCode: code,
+    upstreamCode: numberOf(body.subcode),
+  });
+  if (code !== 0)
+    throw new QqProtocolError('get-user-favorite-albums', code, code, response.status);
+  return dictionaryOf(sanitizePublicValue(dictionaryOf(body.data)));
 };
 
 const getLikedSongs = async (
@@ -1631,6 +1689,15 @@ class QrLoginServiceImpl implements QrLoginService {
   public async getUserPlaylists(token?: string, uin?: string): Promise<Dictionary | null> {
     const auth = this.authFor(token);
     return auth ? getPlaylists(this.http, auth, uin) : null;
+  }
+
+  public async getUserAlbums(
+    token?: string,
+    offset?: number,
+    limit?: number,
+  ): Promise<Dictionary | null> {
+    const auth = this.authFor(token);
+    return auth ? getFavoriteAlbums(this.http, auth, offset, limit) : null;
   }
 
   public async getUserLikedSongs(

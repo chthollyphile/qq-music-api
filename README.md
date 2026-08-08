@@ -256,7 +256,7 @@ docker pull qq-music-api
 1. `GET /login/qr/key?channel=mobile|wechat` 取得 `data.unikey`；未指定时仍走 QQ 音乐 App 通道。
 2. `GET /login/qr/create?key=<unikey>` 取得 `data.qrimg`（App 通道为 PNG，微信通道依上游实际图片型别返回，目前为 JPEG）。
 3. 轮询 `GET /login/qr/check?key=<unikey>`；状态码为 `801` 等待、`802` 已扫码、`803` 成功、`800` 过期或失败。
-4. 成功后调用 `GET /login/status`、`GET /user/detail`、`GET /user/playlist`；内建「我喜欢」歌曲以 `GET /user/liked-songs?offset=0&limit=100` 分页读取。
+4. 成功后调用 `GET /login/status`、`GET /user/detail`、`GET /user/playlist`；内建「我喜欢」歌曲以 `GET /user/liked-songs?offset=0&limit=100` 分页读取，收藏的专辑以 `GET /user/albums?offset=0&limit=20` 分页读取。
 5. `GET /getMusicPlay/:songmid?quality=flac` 会在 opaque session 有效时使用该登录态取得播放链接；`GET /logout` 清除登录态。
 
 凭证只保存在服务端短期内存中。`qr/check` 返回和设置的 cookie 是随机 opaque session ID，不包含 QQ 的 `musickey` 或 `musicid`。服务限制同一时间只有一个 QR，并在失败后通过 `Retry-After` 提示退避。Node 18 的 MQTT WebSocket 由最小 `ws` runtime dependency 提供，不需要升级 Docker runtime，也不需要二维码生成套件。
@@ -264,6 +264,8 @@ docker pull qq-music-api
 同源浏览器会自动携带 HttpOnly session；跨来源 Folia transport 使用 `qr/check` 返回的完整 `qqmusic_session=<opaque token>` 作为 `cookie` query。不要记录或分享该 query 的完整 URL。播放请求仍通过 auth 专用的 `createAuthHttpClient` 发出，不依赖全局 axios defaults。
 
 `/user/playlist` 会合并 `GetPlaylistByUin` 的自建项目与 `CgiGetPlaylistFavInfo` 的收藏歌单并去重；两者使用的账号标识不同。内建 `dirId: 201` 不是普通 `disstid`，其歌曲必须由 `/user/liked-songs` 使用登录凭证的 `encryptUin` 查询，不能交给通用歌单详情端点。
+
+`/user/albums` 是唯一不走 `musicu.fcg` 的用户集合。2026-08-08 对一个已收藏两张专辑的真实登录态实测：`music.musicasset.AlbumFavRead/CgiGetAlbumFavInfo` 确实存在，但在 13 种入参（含 `{}`）与 4 种客户端标识下一律返回 `80000` 与全零结构，所以该码并不是「没有数据」；同族其余方法也都不应答（`CgiGetAlbumFavList` 为 `40000`，`music.musicasset.SingerFavRead` 为 `500003`）。改用 `fav/fcgi-bin/fcg_get_profile_order_asset.fcg`，它接受原生扫码凭证：同一支接口以 `reqtype=3` 返回的收藏歌单与 musicu 完全一致，不带 cookie 则降为 `4000`。其分页参数 `sin`／`ein` 是闭区间下标，不是偏移量加数量。
 
 歌曲详情中的 `file.media_mid` 可能不同于 `songmid`；调用播放接口时应把它传为 `mediaId`，用于构造 QQ vkey filename。2026-08-05 的 G4 实测中，部分歌曲在 320／128 请求均返回 HTTP 200、global code 0、module code 0，但 `purl` 仍为空；该响应没有提供会员、地区或版权原因，不能由服务端把空 URL 命名为「下架」或断定单一根因。可播放歌曲、QQ 搜索及自动 QRC 歌词均已通过人工验收。
 

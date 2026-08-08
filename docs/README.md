@@ -1275,12 +1275,15 @@ songs: [
 | `/user/detail` | cookie | 当前用户信息 |
 | `/user/playlist` | 可选 `uid`、cookie | 自建和收藏歌单 |
 | `/user/liked-songs` | 可选 `offset`、`limit`（最大 100）、cookie | 内建「我喜欢」歌曲分页 |
+| `/user/albums` | 可选 `offset`、`limit`（最大 100，默认 20）、cookie | 收藏的专辑分页 |
 | `/getMusicPlay/:songmid` | `quality`、cookie | 使用当前扫码登录态取得播放链接 |
 | `/logout` | cookie | 清除短期内存登录态 |
 
 `qr/check` 成功时会设置 HttpOnly `qqmusic_session`，并在响应的 `cookie` 字段返回同一个 opaque session 值，供跨来源 transport 保存。该值不包含 QQ 音乐凭证；`musickey`、MQTT token 和 Android 装置上下文不会写入一般日志或响应。用户资料中的账号 ID 只会作为 profile 字段返回。
 
 `/user/playlist` 分别读取自建项目与收藏歌单后合并去重。内建「我喜欢」集合的 `dirId: 201` 不是普通歌单 ID，`/user/liked-songs` 会使用登录凭证的 `encryptUin` 调用专用接口；调用方不得把 `201` 或其 `tid` 猜成通用 `disstid`。
+
+`/user/albums` 不走 `musicu.fcg`，而是 `fav/fcgi-bin/fcg_get_profile_order_asset.fcg`（`reqtype=2`）。2026-08-08 实测：`music.musicasset.AlbumFavRead/CgiGetAlbumFavInfo` 存在但在任何入参与客户端标识下都返回 `80000` 与全零结构，即使账号已收藏专辑也一样，因此该码不能当成「没有数据」。这支 CGI 接受原生扫码凭证，其 `reqtype=3` 返回的收藏歌单与 musicu 完全一致，不带 cookie 时降为 `4000`。响应中的 `albumlist`／`totalalbum`／`has_more` 是上游拼写，控制器会改写成 `albums`／`total`／`more` 后再交给调用方；分页参数 `sin`／`ein` 是闭区间下标。
 
 登录态播放沿用 auth 专用 `createAuthHttpClient` 调用 `musicu.fcg`，不会自行建立 axios client，也不会依赖或修改共用 `src/util/request.ts` 的全局 defaults。
 

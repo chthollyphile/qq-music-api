@@ -5,6 +5,7 @@ const mockQrLoginService = {
   cancelSession: jest.fn(),
   getLoginStatus: jest.fn(),
   getUserDetail: jest.fn(),
+  getUserAlbums: jest.fn(),
   getUserLikedSongs: jest.fn(),
   getUserPlaylists: jest.fn(),
   logout: jest.fn(),
@@ -35,6 +36,7 @@ describe('QQ login controllers', () => {
     mockQrLoginService.checkQr.mockReturnValue({ code: 801, message: 'Waiting for QR scan' });
     mockQrLoginService.getLoginStatus.mockResolvedValue(null);
     mockQrLoginService.getUserDetail.mockResolvedValue(null);
+    mockQrLoginService.getUserAlbums.mockResolvedValue(null);
     mockQrLoginService.getUserLikedSongs.mockResolvedValue(null);
     mockQrLoginService.getUserPlaylists.mockResolvedValue(null);
   });
@@ -177,11 +179,13 @@ describe('QQ login controllers', () => {
     const detailResponse = await request(server).get('/user/detail');
     const playlistResponse = await request(server).get('/user/playlist');
     const likedResponse = await request(server).get('/user/liked-songs');
+    const albumResponse = await request(server).get('/user/albums');
 
     expect(statusResponse.body).toEqual({ code: 200, data: {} });
     expect(detailResponse.status).toBe(401);
     expect(playlistResponse.status).toBe(401);
     expect(likedResponse.status).toBe(401);
+    expect(albumResponse.status).toBe(401);
   });
 
   it('should return authenticated playlists and clear the session on logout', async () => {
@@ -227,5 +231,57 @@ describe('QQ login controllers', () => {
       more: true,
     });
     expect(mockQrLoginService.getUserLikedSongs).toHaveBeenCalledWith('opaque-token', 100, 100);
+  });
+
+  it('should return favourite albums without leaking the upstream field names', async () => {
+    mockQrLoginService.getUserAlbums.mockResolvedValue({
+      albumlist: [{ albumid: 88971, albummid: '000MkMni19ClKG', albumname: '范特西' }],
+      totalalbum: 37,
+      has_more: 1,
+    });
+
+    const response = await request(server)
+      .get('/user/albums')
+      .query({ cookie: 'qqmusic_session=opaque-token', offset: '20', limit: '500' });
+
+    expect(response.body).toEqual({
+      code: 200,
+      albums: [{ albumid: 88971, albummid: '000MkMni19ClKG', albumname: '范特西' }],
+      total: 37,
+      more: true,
+    });
+    // `albumlist` / `totalalbum` / `has_more` are upstream spellings and must not reach callers.
+    expect(Object.keys(response.body)).toEqual(['code', 'albums', 'total', 'more']);
+    expect(mockQrLoginService.getUserAlbums).toHaveBeenCalledWith('opaque-token', 20, 100);
+  });
+
+  it('should report no further pages once the last favourite album has been read', async () => {
+    mockQrLoginService.getUserAlbums.mockResolvedValue({
+      albumlist: [{ albumid: 88971, albummid: '000MkMni19ClKG' }],
+      totalalbum: 2,
+      has_more: 0,
+    });
+
+    const response = await request(server)
+      .get('/user/albums')
+      .query({ cookie: 'qqmusic_session=opaque-token', offset: '1', limit: '1' });
+
+    // `has_more` is 0, and offset 1 + 1 row already reaches the total of 2.
+    expect(response.body).toMatchObject({ total: 2, more: false });
+  });
+
+  it('should answer with an empty album page rather than failing', async () => {
+    mockQrLoginService.getUserAlbums.mockResolvedValue({
+      albumlist: [],
+      totalalbum: 0,
+      has_more: 0,
+    });
+
+    const response = await request(server)
+      .get('/user/albums')
+      .query({ cookie: 'qqmusic_session=opaque-token' });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ code: 200, albums: [], total: 0, more: false });
   });
 });
