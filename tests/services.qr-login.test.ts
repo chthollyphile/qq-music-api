@@ -305,7 +305,7 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
       {
         albumid: 88972,
         albummid: '002J4UUk29y8BY',
-        albumname: '八度空間',
+        albumname: '八度空间',
         singermid: '0025NhlN2yWrP4',
       },
     ];
