@@ -1081,14 +1081,20 @@ const getLoginUserWithCredential = async (
 const getLoginUser = async (http: AuthHttpClient, auth: AuthSession): Promise<Dictionary> =>
   getLoginUserWithCredential(http, auth.device, auth.credential);
 
-/** Builds the same public profile shape from the non-secret identity fields in a credential. */
+/**
+ * Builds the same public profile shape from the non-secret identity fields in a credential.
+ *
+ * The account id is the one `credentialMusicId` resolves, never the raw `musicid`: a WeChat
+ * credential carries a placeholder there and keeps the real id in `str_musicid`, which is why
+ * every upstream call this service makes already goes through that helper. Handing out the raw
+ * field would publish an id the service itself refuses to key its own requests on.
+ */
 const publicProfileFromCredential = (credential: QqCredential): Dictionary => {
-  const strMusicId = stringOf(credential.str_musicid);
+  const musicId = credentialMusicId(credential);
   const nickname = stringOf(credential.nick) || stringOf(credential.nickname);
   const avatarUrl = stringOf(credential.logo) || stringOf(credential.avatarUrl);
   return {
-    musicid: credential.musicid,
-    ...(strMusicId ? { str_musicid: strMusicId } : {}),
+    ...(musicId ? { musicid: musicId, str_musicid: musicId } : {}),
     ...(nickname ? { nickname, nick: nickname } : {}),
     ...(avatarUrl ? { avatarUrl } : {}),
   };

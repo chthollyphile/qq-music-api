@@ -57,6 +57,11 @@ interface HarnessOptions {
    * nested under `info`. The convenience fixture above is not what the real endpoint answers.
    */
   nestedProfileOnly?: boolean;
+  /**
+   * Reproduces the measured WeChat credential: `musicid` is a placeholder `0` and the real
+   * account id only ever arrives in `str_musicid`.
+   */
+  placeholderMusicId?: boolean;
   /** Whole favourite-album collection; the CGI stub slices the requested `sin`..`ein` out of it. */
   favoriteAlbums?: Record<string, unknown>[];
   /** Non-zero makes the favourite-album CGI reject the call, the way it does without a cookie. */
@@ -176,7 +181,7 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
             req_0: {
               code: 0,
               data: {
-                musicid: 456,
+                musicid: options.placeholderMusicId ? 0 : 456,
                 str_musicid: '456',
                 musickey: 'wechat-credential-key',
                 openid: 'wechat-openid',
@@ -516,10 +521,33 @@ describe('QQ native QR login service', () => {
     // come from the credential underneath — while `info` still has to survive untouched.
     const profile = await harness.service.getLoginStatus(token);
     expect(profile).toMatchObject({
-      musicid: 123,
+      musicid: '123',
+      str_musicid: '123',
       info: { nick: '我的 QQ 账号', logo: 'https://thirdqq.example.test/avatar' },
     });
     expect(profile).not.toHaveProperty('musickey');
+  });
+
+  it('should publish the account id a WeChat credential keeps out of its placeholder field', async () => {
+    const harness = createProtocolHarness({ nestedProfileOnly: true, placeholderMusicId: true });
+    const key = await harness.service.createSession('wechat');
+    await harness.service.createQr(key);
+    await waitFor(() => harness.service.checkQr(key).code === 803);
+    const token = harness.service.checkQr(key).cookie?.split('=')[1];
+
+    // A WeChat credential holds `musicid: 0`; publishing that raw would hand callers an id every
+    // upstream call rejects — `/user/playlist?uid=0` answers with none of the created playlists.
+    const profile = await harness.service.getLoginStatus(token);
+    expect(profile).toMatchObject({ musicid: '456', str_musicid: '456' });
+
+    // The same id the service keys its own reads on, so a caller echoing it back is a no-op.
+    await harness.service.getUserPlaylists(token, '456');
+    const playlistCall = jest
+      .mocked(harness.httpPost)
+      .mock.calls.find(([, payload]) => methodOf(payload) === 'GetPlaylistByUin');
+    expect(dictionaryOf(dictionaryOf(dictionaryOf(playlistCall?.[1]).req_0).param)).toMatchObject({
+      uin: '456',
+    });
   });
 
   it('should resolve music URLs through the authenticated auth HTTP client', async () => {
@@ -915,7 +943,7 @@ describe('QQ login channel routing', () => {
 
     const profile = await harness.service.getLoginStatus(token);
     expect(profile).toMatchObject({
-      musicid: 456,
+      musicid: '456',
       nickname: '我的微信账号',
     });
     for (const secret of [
