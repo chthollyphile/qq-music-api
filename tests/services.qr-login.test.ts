@@ -61,6 +61,8 @@ interface HarnessOptions {
   favoriteAlbums?: Record<string, unknown>[];
   /** Non-zero makes the favourite-album CGI reject the call, the way it does without a cookie. */
   favoriteAlbumCode?: number;
+  /** Whole raw CGI body, for replies that accept the call but answer in an unexpected shape. */
+  favoriteAlbumBody?: unknown;
   /** Raw poll bodies served in order; the last one keeps repeating. */
   wechatStatuses?: string[];
   wechatQrPage?: string;
@@ -292,6 +294,7 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
     }
     favoriteAlbumRequests.push(config);
     if (options.favoriteAlbumCode) return response({ code: options.favoriteAlbumCode });
+    if (options.favoriteAlbumBody !== undefined) return response(options.favoriteAlbumBody);
     const params = dictionaryOf(config.params);
     const sin = Number(params.sin ?? 0);
     const ein = Number(params.ein ?? 0);
@@ -885,6 +888,16 @@ describe('QQ login channel routing', () => {
     await expect(harness.service.getUserAlbums(token, 0, 20)).rejects.toThrow(
       /get-user-favorite-albums/,
     );
+  });
+
+  it('should not mistake an accepted-but-malformed favourite-album reply for a failure', async () => {
+    // `code: 0` with no `data` at all. The call was accepted, so this must not throw the way a
+    // rejection does; the route turns the empty result into an empty collection.
+    const harness = createProtocolHarness({ favoriteAlbumBody: { code: 0 } });
+    const { result } = await login(harness.service, harness.emit);
+    const token = result.cookie?.split('=')[1];
+
+    await expect(harness.service.getUserAlbums(token, 0, 20)).resolves.toEqual({});
   });
 
   it('should answer with null for an unknown token so the route can require a login', async () => {

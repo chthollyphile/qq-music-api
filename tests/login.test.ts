@@ -270,6 +270,41 @@ describe('QQ login controllers', () => {
     expect(response.body).toMatchObject({ total: 2, more: false });
   });
 
+  it('should surface a failed favourite-album read instead of an empty collection', async () => {
+    // A rejected upstream call, a dropped connection and a timeout all arrive here as a
+    // rejection. None of them may be reported as "this account has no favourite albums".
+    for (const failure of [
+      new Error('get-user-favorite-albums failed (HTTP 200, global=4000, code=4000)'),
+      Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }),
+      Object.assign(new Error('timeout of 25000ms exceeded'), { code: 'ECONNABORTED' }),
+    ]) {
+      mockQrLoginService.getUserAlbums.mockRejectedValueOnce(failure);
+
+      const response = await request(server)
+        .get('/user/albums')
+        .query({ cookie: 'qqmusic_session=opaque-token' });
+
+      expect(response.status).toBe(500);
+      expect(response.body).not.toHaveProperty('albums');
+    }
+  });
+
+  it('should tolerate a favourite-album reply whose fields are the wrong shape', async () => {
+    // Accepted by upstream, but `albumlist` is not a list and `totalalbum` is not a number.
+    mockQrLoginService.getUserAlbums.mockResolvedValue({
+      albumlist: { unexpected: true },
+      totalalbum: 'many',
+    });
+
+    const response = await request(server)
+      .get('/user/albums')
+      .query({ cookie: 'qqmusic_session=opaque-token' });
+
+    // Never a 500, and never a fabricated total: an unreadable list is an empty one.
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ code: 200, albums: [], total: 0, more: false });
+  });
+
   it('should answer with an empty album page rather than failing', async () => {
     mockQrLoginService.getUserAlbums.mockResolvedValue({
       albumlist: [],
