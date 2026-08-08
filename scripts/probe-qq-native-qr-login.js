@@ -79,16 +79,16 @@ async function main() {
       reused: Boolean(device.qimei || device.sessionUid),
     };
 
-    logPhase('取得並固定 Android 裝置上下文（QIMEI）…');
+    logPhase('取得并固定 Android 装置上下文（QIMEI）…');
     await ensureQimei(client, device, trace);
     savePrivateJson(devicePath, device);
 
-    logPhase('在同一裝置上下文建立 GetSession…');
+    logPhase('在同一装置上下文建立 GetSession…');
     await refreshAndroidSession(client, device, trace);
     savePrivateJson(devicePath, device);
     trace.device.sessionUidHash = fingerprint(device.sessionUid);
 
-    logPhase('向 QQ 音樂建立原生登入 QR…');
+    logPhase('向 QQ 音乐建立原生登录 QR…');
     const { qrcodeId, image } = await createNativeQr(client, device, trace);
     require('node:fs').writeFileSync(qrPath, image, { mode: 0o600 });
     logPhase(`QR_READY ${qrPath}`);
@@ -99,11 +99,11 @@ async function main() {
       timeoutMs,
       onEvent(event) {
         recordEvent(trace, event.type, event.payload);
-        if (event.type === 'waiting') logPhase('STATUS waiting（MQTT 已訂閱，可掃碼）');
+        if (event.type === 'waiting') logPhase('STATUS waiting（MQTT 已订阅，可扫码）');
         else if (event.type === 'scanned') {
           scannedAt = Date.now();
-          logPhase('STATUS scanned（手機已掃碼，等待憑證事件）');
-        } else if (event.type === 'cookies') logPhase('STATUS credential-received（立即交換，不輸出 token）');
+          logPhase('STATUS scanned（手机已扫码，等待凭据事件）');
+        } else if (event.type === 'cookies') logPhase('STATUS credential-received（立即交换，不输出 token）');
         else logPhase(`STATUS ${event.type || 'unknown'}`);
       },
     });
@@ -122,7 +122,7 @@ async function main() {
       trace.credentialSource = 'login-exchange';
     } catch (exchangeError) {
       logPhase(`EXCHANGE_REJECTED ${exchangeError.message}`);
-      logPhase('嘗試把 MQTT qqmusic_key 當作既有登入憑證驗證（不重出碼）…');
+      logPhase('尝试把 MQTT qqmusic_key 当作既有登录凭据验证（不重出码）…');
       const directCredential = {
         musicid: Number(musicid),
         str_musicid: String(musicid),

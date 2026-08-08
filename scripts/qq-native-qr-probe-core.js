@@ -386,12 +386,12 @@ async function verifyCredentialAndPlaylists(client, device, credential, trace, p
 
 function pickDisplayName(user) {
   const candidates = [user.nickname, user.nick, user.name, user.userName];
-  return candidates.find((value) => typeof value === 'string' && value.trim()) || '(上游未回傳暱稱)';
+  return candidates.find((value) => typeof value === 'string' && value.trim()) || '(上游未返回昵称)';
 }
 
 function pickPlaylistName(item) {
   const candidates = [item.dirName, item.dissname, item.title, item.name];
-  return candidates.find((value) => typeof value === 'string' && value.trim()) || '(未命名歌單)';
+  return candidates.find((value) => typeof value === 'string' && value.trim()) || '(未命名歌单)';
 }
 
 module.exports = {
