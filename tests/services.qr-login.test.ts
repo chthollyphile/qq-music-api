@@ -5,6 +5,8 @@ import {
 } from '../src/services/auth/deviceContext';
 import createAuthHttpClient, { type AuthHttpClient } from '../src/services/auth/httpClient';
 import {
+  type AuthSessionRepository,
+  createMemoryAuthSessionRepository,
   createQrLoginService,
   type QrLoginService,
   QrLoginServiceError,
@@ -49,6 +51,8 @@ interface HarnessOptions {
   /** The exchanged WeChat key is rejected with safe code 1000 until refreshed. */
   wechatNeedsRefresh?: boolean;
   deviceRepository?: DeviceContextRepository;
+  authSessionRepository?: AuthSessionRepository;
+  now?: () => number;
   qimei?: () => AxiosResponse<unknown>;
   /** Reproduces the Android `UrlGetVkey` response, which carries `midurlinfo` but no `sip`. */
   emptyVkeySip?: boolean;
@@ -338,10 +342,12 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
   const service = createQrLoginService({
     http,
     deviceRepository,
+    authSessionRepository: options.authSessionRepository,
     createSessionHttp: () => wechat.client,
     // Must yield to the macrotask queue: an instantly resolved sleep would turn the poll loop
     // into a microtask chain that starves every timer in the test.
     sleep: () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+    now: options.now,
     randomBytes: (size) => Buffer.alloc(size, 7),
     listen: (_qrcodeId, onEvent) => {
       emit = onEvent;
@@ -611,14 +617,95 @@ describe('QQ native QR login service', () => {
   });
 
   it('should clear auth and close QR listeners on logout', async () => {
-    const harness = createProtocolHarness();
+    const authSessionRepository = createMemoryAuthSessionRepository();
+    const harness = createProtocolHarness({ authSessionRepository });
     const { result } = await login(harness.service, harness.emit);
     const token = result.cookie?.split('=')[1];
+
+    expect(authSessionRepository.load()).toEqual([expect.objectContaining({ token })]);
 
     harness.service.logout(token);
 
     await expect(harness.service.getLoginStatus(token)).resolves.toBeNull();
+    expect(authSessionRepository.load()).toEqual([]);
     expect(harness.wasClosed()).toBe(true);
+  });
+
+  it('should restore an authenticated session after the service is recreated', async () => {
+    const authSessionRepository = createMemoryAuthSessionRepository();
+    const first = createProtocolHarness({ authSessionRepository });
+    const { result } = await login(first.service, first.emit);
+    const token = result.cookie?.split('=')[1];
+
+    // Recreating the service models an Electron app restart: the renderer still owns only this
+    // opaque token, while the repository supplies the credential/device pair to the new process.
+    const restarted = createProtocolHarness({ authSessionRepository });
+
+    await expect(restarted.service.getLoginStatus(token)).resolves.toMatchObject({
+      musicid: 123,
+      nickname: '我的 QQ 账号',
+    });
+    expect(restarted.comms.at(-1)).toMatchObject({
+      qq: '123',
+      authst: 'credential-key',
+      tmeLoginType: 6,
+    });
+  });
+
+  it('should discard an expired persisted session during restart', async () => {
+    let current = 1_000_000;
+    const now = () => current;
+    const authSessionRepository = createMemoryAuthSessionRepository();
+    const first = createProtocolHarness({ authSessionRepository, now });
+    const { result } = await login(first.service, first.emit);
+    const token = result.cookie?.split('=')[1];
+
+    current += 24 * 60 * 60 * 1000 + 1;
+    const restarted = createProtocolHarness({ authSessionRepository, now });
+
+    await expect(restarted.service.getLoginStatus(token)).resolves.toBeNull();
+    expect(authSessionRepository.load()).toEqual([]);
+  });
+
+  it('should reject malformed persisted credentials before they reach an upstream request', async () => {
+    const save = jest.fn();
+    const authSessionRepository: AuthSessionRepository = {
+      kind: 'test-corrupt-state',
+      load: () => [
+        {
+          token: 'opaque-token',
+          credential: { musicid: 123, loginType: 6 },
+          device: {},
+          expiresAt: Date.now() + 60_000,
+        },
+      ],
+      save,
+    };
+
+    const restarted = createProtocolHarness({ authSessionRepository });
+
+    await expect(restarted.service.getLoginStatus('opaque-token')).resolves.toBeNull();
+    expect(restarted.calls).toEqual([]);
+    expect(save).toHaveBeenCalledWith([]);
+  });
+
+  it('should keep the current login usable when the persistence backend is unavailable', async () => {
+    const authSessionRepository: AuthSessionRepository = {
+      kind: 'test-unavailable-keychain',
+      load: () => {
+        throw new Error('keychain unavailable');
+      },
+      save: () => {
+        throw new Error('keychain unavailable');
+      },
+    };
+    const harness = createProtocolHarness({ authSessionRepository });
+    const { result } = await login(harness.service, harness.emit);
+    const token = result.cookie?.split('=')[1];
+
+    // Persistence failure must not turn a successful upstream login into a failed login. The
+    // session remains process-local and can be replaced by a new scan after restart.
+    await expect(harness.service.getLoginStatus(token)).resolves.toMatchObject({ musicid: 123 });
   });
 
   it('should reuse the stored device context after a service restart', async () => {

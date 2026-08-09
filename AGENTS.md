@@ -78,6 +78,7 @@ qq-music-api/
 - `src/services/*`
   - 负责实际的数据拉取、协议拼装与结果加工。
   - 是当前最接近“数据获取代理”的能力落点。
+  - `src/services/auth/qrLogin.ts` 的用户凭证默认只存在内存；可信宿主可通过包根导出的 `configureAuthSessionRepository` 注入加密仓库。renderer 仍只能持有 opaque session token。
 - `src/util/logger.ts`
   - 统一日志出口。
   - Explorer 的服务端调试日志也通过这里输出。
