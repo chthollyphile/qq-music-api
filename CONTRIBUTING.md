@@ -24,19 +24,19 @@
 
 本项目基于 `Koa2` 构建，请确保您的本地环境满足以下要求：
 
-- **Node.js**: >= 7.6.0 (因为使用了 `async/await`，推荐使用最新的 LTS 版本)
-- **npm** 或 **yarn**
+- **Node.js**: >= 20
+- **npm**
 - **Git**
 
 ### 快速配置指南
 
 ```bash
 # 1. 克隆项目到本地
-git clone git@github.com:Rain120/qq-music-api.git
+git clone git@github.com:yakult-green-tea/qq-music-api.git
 cd qq-music-api
 
 # 2. 安装依赖
-npm install
+npm ci
 
 # 3. 启动开发环境（支持热重载）
 npm run dev
@@ -80,9 +80,11 @@ qq-music-api/
 
 1. **Fork 本仓库** 到您的个人 GitHub 账号下。
 2. **克隆您的 Fork 仓库** 到本地机器。
-3. **创建一个新的分支** 进行开发：
+3. **从 `main` 创建一个新的分支** 进行开发：
    ```bash
-   git checkout -b feature/your-feature-name
+   git checkout main
+   git pull --ff-only
+   git checkout -b feat/your-feature-name
    # 或者如果是修复 bug
    git checkout -b fix/your-bug-fix
    ```
@@ -90,9 +92,9 @@ qq-music-api/
 5. **提交代码**（必须遵循下文的[代码提交规范](#代码提交规范)）。
 6. **推送到远程仓库**：
    ```bash
-   git push origin feature/your-feature-name
+   git push origin feat/your-feature-name
    ```
-7. **提交 Pull Request (PR)** 到本项目的 `master` 或 `main` 分支，并详细描述您所做的更改。
+7. **提交 Pull Request (PR)** 到本项目的 `main` 分支，并详细描述您所做的更改。
 
 ---
 
@@ -125,11 +127,18 @@ qq-music-api/
 本项目历史版本可能缺乏完整的单元测试覆盖。但是，对于未来的贡献，**我们强烈建议并要求为所有新功能和 Bug 修复添加对应的测试用例**。
 
 1. **测试框架**: 推荐使用主流的 Node.js 测试工具（如 Jest 或 Mocha）。
-2. **本地验证**: 在提交 PR 前，请确保所有测试均能稳定通过：
+2. **本地验证**: 在提交 PR 前，请确保完整验证链均能稳定通过：
    ```bash
-   npm run test
+   npm ci
+   npm run lint
+   npm run build
+   npm test
+   npm run build:js
+   npm pack --dry-run
    ```
-3. **PR 附件**: 请在 PR 描述中附带相关的测试运行截图或终端输出日志。如果因为特殊原因无法提供测试，请在 PR 中进行说明。
+3. **本地 hooks**: `pre-commit` 只对暂存文件运行 `lint-staged`，`commit-msg` 只运行 `commitlint`。它们用于快速反馈，不替代 CI，也不在 `pre-push` 重跑完整构建或测试。
+4. **CI 质量门**: GitHub Actions CI 是仓库的权威验证，PR 合并前必须通过 lint、类型检查、测试、JavaScript 构建和 npm package 内容检查。
+5. **PR 附件**: 请在 PR 描述中说明已运行的验证。如果因为特殊原因无法完成某项检查，请在 PR 中进行说明。
 
 ---
 
@@ -138,6 +147,6 @@ qq-music-api/
 1. **提交审查**: 提交 PR 后，项目维护者或自动化工具会对其进行初步检查。
 2. **反馈与讨论**: 维护者会对代码风格、API 设计、安全性或文档提出修改建议。
 3. **修改更新**: 请根据 Review 意见在原分支上继续提交修改，PR 会自动更新。
-4. **合并标准**: 获得至少一位核心维护者的 Approve，并且所有相关的 CI 检查通过后，代码将被合并入主分支。
+4. **合并标准**: 所有必需的 CI 检查通过后，代码才可合并入 `main`。项目可由单一维护者维护，不强制设置会阻止维护者自行合并的多人 approval requirement。
 
 再次感谢您对开源社区的贡献！✨
