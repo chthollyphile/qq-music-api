@@ -72,11 +72,10 @@ export const createAuthHttpClient = (
       const explicitCookies =
         typeof explicitCookieEntry?.[1] === 'string' ? explicitCookieEntry[1] : '';
       const mergedCookies = mergeCookieHeaders(cookies, explicitCookies);
-      // `src/util/request.ts` mutates the GLOBAL axios defaults (POST Content-Type,
-      // responseType) for the legacy y.qq.com/c.y.qq.com services, and `axios.create()`
-      // snapshots those defaults when it runs. Whether that module is imported before or
-      // after this client is built is an import-order accident, so the auth protocol pins
-      // its own JSON contract per request instead of inheriting whatever is global.
+      // Keep the auth protocol independent from host-level axios defaults. This package can
+      // be embedded in a larger Electron or Node process where another dependency may change
+      // the shared axios singleton before this client is created, so JSON semantics are pinned
+      // per request instead of depending on host import order.
       const response = await transport.request<T>({
         ...config,
         headers: {
@@ -87,7 +86,7 @@ export const createAuthHttpClient = (
         // The web login channels answer with HTML, `window.wx_errcode=...` / `ptuiCB('...')`
         // script text and raw QR images, so a caller may opt into `text` / `arraybuffer`
         // explicitly. Anything that does not ask stays JSON: this must never fall back to the
-        // global axios default, which is exactly what `src/util/request.ts` rewrites.
+        // host's global axios default, which is outside this package's control.
         responseType: config.responseType ?? 'json',
         maxRedirects: 0,
         validateStatus: (status) => status >= 200 && status < 400,

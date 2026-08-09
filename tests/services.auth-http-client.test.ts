@@ -2,10 +2,10 @@ import http from 'node:http';
 import axios from 'axios';
 import createAuthHttpClient from '../src/services/auth/httpClient';
 
-// Runs the real axios stack over loopback. `src/util/request.ts` mutates the global axios
-// defaults for the legacy services, and `axios.create()` snapshots them, so an auth client
-// built after that import used to ship the QIMEI JSON body as form-urlencoded. Jest gives this
-// file its own module registry, so the deliberate contamination stays contained here.
+// Runs the real axios stack over loopback. The auth client pins its JSON contract per request
+// so it remains independent from host-level defaults even when this package is embedded in a
+// larger process. The legacy request module now has its own client, but this defense remains
+// valuable because the host or another dependency can still change the shared axios singleton.
 
 interface ReceivedRequest {
   contentType?: string;
@@ -41,7 +41,7 @@ const startEchoServer = async (): Promise<{
 };
 
 describe('QQ auth HTTP client global default isolation', () => {
-  it('should keep posting JSON after the legacy services rewrite the axios defaults', async () => {
+  it('should keep posting JSON before and after the legacy request module is loaded', async () => {
     const echo = await startEchoServer();
     try {
       const beforeLegacyImport = createAuthHttpClient();
