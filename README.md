@@ -27,6 +27,7 @@
 - **原生扫码登录**：`/login/qr/key`、`/login/qr/create`、`/login/qr/check`、`/login/qr/cancel`，支持 QQ 音乐 App（MQTT over WSS）与微信两种扫码方式。
 - **二维码会话可取消、可抢占**：关闭登录弹窗时可显式取消会话；即使取消请求没送达，尚未被扫码的旧会话也会被下一次登录接管，不会在 3 分钟 TTL 内一直返回 409。
 - **可作为 npm 包内嵌**：`main` 指向编译产物 `dist/src/app.js`，Docker 镜像与 Electron 主进程都能直接 `require()`，无需 vendored 源码或额外打包步骤。
+- **登录态仓库可注入**：默认仍只保存在进程内存；可信宿主可提供加密仓库，让 opaque session 在进程重启后继续映射到服务端凭证。
 - **启动时的版本检查默认关闭**：被当作依赖 `require()` 时不应该在 import 期 spawn `npm`，需要时用 `QQ_ENABLE_UPDATE_CHECK=true` 显式开启。
 
 #### 作为 npm 包使用
@@ -39,6 +40,8 @@ PORT=3200 node node_modules/@yakult-green-tea/qq-music-api/dist/src/app.js
 ```
 
 `require()` 该包会在 import 期直接 `app.listen()`，并导出 http server 句柄 `server`：嵌入方可以等 `listening` 事件确认端口真的绑上、挂 `error` 监听避免绑定失败变成未处理异常，退出时主动 `close()`。因为 `require` 有模块缓存，同一进程内只应该 `require()` 一次。
+
+需要跨重启保留登录态的可信宿主，可在 `require()` 返回后立即调用 `configureAuthSessionRepository({ kind, load, save })`。`load()` 返回此前保存的 session 数组，`save(sessions)` 必须在宿主侧加密保存；不得把原始数组写进浏览器存储、普通 JSON 文件或日志。未注入时行为与旧版本一致，仍使用内存仓库。
 
 常用环境变量：`PORT`（默认 `3200`）、`QQ_AUTH_STATE_PATH`（设备标识持久化路径）、`QQ_ENABLE_UPDATE_CHECK`、`AUTO_OPEN_EXPLORER`。
 
@@ -259,7 +262,7 @@ docker pull qq-music-api
 4. 成功后调用 `GET /login/status`、`GET /user/detail`、`GET /user/playlist`；内建「我喜欢」歌曲以 `GET /user/liked-songs?offset=0&limit=100` 分页读取，收藏的专辑以 `GET /user/albums?offset=0&limit=20` 分页读取。
 5. `GET /getMusicPlay/:songmid?quality=flac` 会在 opaque session 有效时使用该登录态取得播放链接；`GET /logout` 清除登录态。
 
-凭证只保存在服务端短期内存中。`qr/check` 返回和设置的 cookie 是随机 opaque session ID，不包含 QQ 的 `musickey` 或 `musicid`。服务限制同一时间只有一个 QR，并在失败后通过 `Retry-After` 提示退避。Node 18 的 MQTT WebSocket 由最小 `ws` runtime dependency 提供，不需要升级 Docker runtime，也不需要二维码生成套件。
+凭证只存在服务端；默认仓库是短期内存，可信嵌入方也可注入加密仓库。`qr/check` 返回和设置的 cookie 是随机 opaque session ID，不包含 QQ 的 `musickey` 或 `musicid`。服务限制同一时间只有一个 QR，并在失败后通过 `Retry-After` 提示退避。Node 18 的 MQTT WebSocket 由最小 `ws` runtime dependency 提供，不需要升级 Docker runtime，也不需要二维码生成套件。
 
 同源浏览器会自动携带 HttpOnly session；跨来源 Folia transport 使用 `qr/check` 返回的完整 `qqmusic_session=<opaque token>` 作为 `cookie` query。不要记录或分享该 query 的完整 URL。播放请求仍通过 auth 专用的 `createAuthHttpClient` 发出，不依赖全局 axios defaults。
 
@@ -277,7 +280,7 @@ docker pull qq-music-api
 
 同时新增 `services/auth/deviceContext.ts`：可注入、可测试且可配置存储位置的 Android device context repository。默认写入 `.auth-state/qq-device.json`（权限 0600，已 gitignore），可用 `QQ_AUTH_STATE_PATH` 指定其他路径，或设为 `memory` 关闭持久化；写盘失败会降级为进程内上下文而不阻断登录。QIMEI 与 device session 因此可以跨进程重启复用，不必每次启动都重新注册装置。存储内容只有装置识别值，**不包含 `musickey`、MQTT token 或任何用户凭证**；多实例部署请各自指定 `QQ_AUTH_STATE_PATH`，不要共用同一份装置身份。
 
-建立 QR session 之前的失败（QIMEI 或 GetSession）会套用指数退避：首次返回 502 + `Retry-After` 并附安全数字码 `upstreamCode`，随后的请求返回 429，避免用户连点打出连续 500 或连续冲击上游。登录 session 仍只存在于单进程内存中，服务重启会清除全部 QR 与登录 session，客户端需要重新扫码。
+建立 QR session 之前的失败（QIMEI 或 GetSession）会套用指数退避：首次返回 502 + `Retry-After` 并附安全数字码 `upstreamCode`，随后的请求返回 429，避免用户连点打出连续 500 或连续冲击上游。未注入 auth session repository 时，服务重启仍会清除全部 QR 与登录 session；注入仓库时只恢复尚未超过 24 小时 TTL、且通过完整结构校验的登录 session。
 
 ### 使用文档
 
@@ -312,7 +315,7 @@ docker pull qq-music-api
 ### 项目不足
 
 1. 当前已补充基础 `unit test` 与接口测试，但整体覆盖率和复杂场景用例仍有继续提升空间。
-2. 登录态目前只保存在单进程内存中；服务重启后需要重新扫码。Android device context 的安全重用仍是 G3 阻塞项，不等同于持久化用户登录凭证。
+2. 独立服务默认使用进程内登录态；需要跨重启或多实例共享时，部署方必须自行提供受保护的 `AuthSessionRepository`。仓库的加密、并发一致性与密钥管理属于宿主责任。
 
 ### 🤖 AI 代理 (Agents)
 

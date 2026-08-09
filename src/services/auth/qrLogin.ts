@@ -6,6 +6,7 @@ import {
   createDeviceContextStore,
   type DeviceContextRepository,
   type DeviceContextStore,
+  isAndroidDevice,
 } from './deviceContext';
 import createAuthHttpClient, { type AuthHttpClient } from './httpClient';
 import {
@@ -99,11 +100,33 @@ interface QrSession {
   retryAfterMs?: number;
 }
 
-interface AuthSession {
+/**
+ * Complete server-side login state behind the opaque `qqmusic_session` token.
+ *
+ * This type is exported only so an embedding host can persist it through the repository contract
+ * below. It must never be returned by an HTTP endpoint or copied into renderer storage: in Folia,
+ * only the opaque `token` crosses into the renderer process.
+ */
+export interface AuthSession {
   token: string;
   credential: QqCredential;
   device: AndroidDevice;
   expiresAt: number;
+}
+
+/**
+ * Synchronous by design: Electron's `safeStorage` API and the existing login service are both
+ * synchronous at this boundary. Keeping persistence outside this package lets desktop hosts
+ * encrypt credentials with the OS keychain while ordinary server deployments retain the safe,
+ * process-local default.
+ *
+ * `load` returns `unknown` intentionally. Persisted state is an untrusted input and is validated
+ * before any credential reaches an upstream request.
+ */
+export interface AuthSessionRepository {
+  readonly kind: string;
+  load(): unknown;
+  save(sessions: readonly AuthSession[]): void;
 }
 
 interface QrLoginDependencies {
@@ -111,6 +134,7 @@ interface QrLoginDependencies {
   /** Builds the per-QR-session client used by the web login channels. */
   createSessionHttp?: () => AuthHttpClient;
   deviceRepository?: DeviceContextRepository;
+  authSessionRepository?: AuthSessionRepository;
   listen?: (
     qrcodeId: string,
     onEvent: (event: QrEvent) => void,
@@ -145,8 +169,170 @@ export interface QrLoginService {
     quality?: string | number,
     mediaId?: string,
   ): Promise<Dictionary | null>;
+  configureAuthSessionRepository(repository: AuthSessionRepository): void;
   logout(token?: string): void;
 }
+
+interface AuthSessionStore {
+  get(token: string): AuthSession | null;
+  set(session: AuthSession): void;
+  delete(token: string): void;
+  cleanup(): void;
+  useRepository(repository: AuthSessionRepository): void;
+}
+
+const cloneAuthSession = (session: AuthSession): AuthSession => ({
+  ...session,
+  credential: { ...session.credential },
+  device: { ...session.device },
+});
+
+const isQqCredential = (value: unknown): value is QqCredential => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  const hasMusicId =
+    (typeof candidate.musicid === 'string' && candidate.musicid.length > 0) ||
+    (typeof candidate.musicid === 'number' && Number.isFinite(candidate.musicid));
+  return (
+    hasMusicId &&
+    typeof candidate.musickey === 'string' &&
+    candidate.musickey.length > 0 &&
+    typeof candidate.loginType === 'number' &&
+    Number.isFinite(candidate.loginType)
+  );
+};
+
+/** A decrypted record is still untrusted: reject partial or hand-edited credentials on restore. */
+export const isAuthSession = (value: unknown): value is AuthSession => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.token === 'string' &&
+    candidate.token.length > 0 &&
+    isQqCredential(candidate.credential) &&
+    isAndroidDevice(candidate.device) &&
+    typeof candidate.expiresAt === 'number' &&
+    Number.isFinite(candidate.expiresAt)
+  );
+};
+
+/**
+ * Backwards-compatible default for servers that do not opt into persistence. The repository owns
+ * copies so callers cannot mutate a stored credential through a previously returned object.
+ */
+export const createMemoryAuthSessionRepository = (
+  seed: readonly AuthSession[] = [],
+): AuthSessionRepository => {
+  let stored = seed.filter(isAuthSession).map(cloneAuthSession);
+  return {
+    kind: 'memory',
+    load: () => stored.map(cloneAuthSession),
+    save: (sessions) => {
+      stored = sessions.map(cloneAuthSession);
+    },
+  };
+};
+
+/**
+ * Keeps repository failures outside the login protocol. A locked keychain or corrupt desktop state
+ * must degrade to the previous in-memory behaviour instead of preventing QR login altogether.
+ */
+const createAuthSessionStore = (
+  initialRepository: AuthSessionRepository,
+  now: () => number,
+): AuthSessionStore => {
+  let repository = initialRepository;
+  const sessions = new Map<string, AuthSession>();
+
+  const persist = (): void => {
+    try {
+      repository.save(Array.from(sessions.values(), cloneAuthSession));
+    } catch (error) {
+      logger.warn('qq-auth.auth-session.save-failed', {
+        kind: repository.kind,
+        name: error instanceof Error ? error.name : 'Error',
+      });
+    }
+  };
+
+  const removeExpired = (): boolean => {
+    let removed = false;
+    const current = now();
+    for (const [token, session] of sessions) {
+      if (session.expiresAt <= current) {
+        sessions.delete(token);
+        removed = true;
+      }
+    }
+    return removed;
+  };
+
+  const restore = (): void => {
+    let loaded: unknown;
+    try {
+      loaded = repository.load();
+    } catch (error) {
+      logger.warn('qq-auth.auth-session.load-failed', {
+        kind: repository.kind,
+        name: error instanceof Error ? error.name : 'Error',
+      });
+      return;
+    }
+
+    if (loaded === null || loaded === undefined) loaded = [];
+    if (!Array.isArray(loaded)) {
+      logger.warn('qq-auth.auth-session.invalid-state', { kind: repository.kind });
+      return;
+    }
+
+    let rejectedCount = 0;
+    for (const value of loaded) {
+      if (!isAuthSession(value)) {
+        rejectedCount += 1;
+        continue;
+      }
+      sessions.set(value.token, cloneAuthSession(value));
+    }
+    const expiredRemoved = removeExpired();
+    logger.info('qq-auth.auth-session.ready', {
+      kind: repository.kind,
+      restoredCount: sessions.size,
+      rejectedCount,
+    });
+    // Rewrite only when validation pruned records, so corrupt or expired credentials are not
+    // repeatedly decrypted and examined on every application launch.
+    if (rejectedCount > 0 || expiredRemoved) persist();
+  };
+
+  restore();
+
+  return {
+    get: (token) => sessions.get(token) ?? null,
+    set: (session) => {
+      sessions.set(session.token, cloneAuthSession(session));
+      persist();
+    },
+    delete: (token) => {
+      if (sessions.delete(token)) persist();
+    },
+    cleanup: () => {
+      if (removeExpired()) persist();
+    },
+    useRepository: (nextRepository) => {
+      // The npm package starts listening as a side effect of require(). Folia injects its encrypted
+      // repository immediately afterwards; preserving any already-created in-memory entries also
+      // makes a late-but-valid configuration call lossless.
+      const currentSessions = Array.from(sessions.values(), cloneAuthSession);
+      sessions.clear();
+      repository = nextRepository;
+      restore();
+      for (const session of currentSessions) {
+        if (session.expiresAt > now()) sessions.set(session.token, session);
+      }
+      if (currentSessions.length > 0) persist();
+    },
+  };
+};
 
 interface WebSocketLike {
   readyState: number;
@@ -1364,7 +1550,7 @@ class QrLoginServiceImpl implements QrLoginService {
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly random: (size: number) => Buffer;
   private readonly qrSessions = new Map<string, QrSession>();
-  private readonly authSessions = new Map<string, AuthSession>();
+  private readonly authSessionStore: AuthSessionStore;
   private readonly deviceStore: DeviceContextStore;
   private creatingSession = false;
   private failureCount = 0;
@@ -1380,6 +1566,10 @@ class QrLoginServiceImpl implements QrLoginService {
     this.deviceStore = createDeviceContextStore(
       dependencies.deviceRepository ?? createDefaultDeviceContextRepository(),
     );
+    this.authSessionStore = createAuthSessionStore(
+      dependencies.authSessionRepository ?? createMemoryAuthSessionRepository(),
+      this.now,
+    );
   }
 
   private cleanup(): void {
@@ -1390,9 +1580,7 @@ class QrLoginServiceImpl implements QrLoginService {
         this.qrSessions.delete(key);
       }
     }
-    for (const [token, auth] of this.authSessions) {
-      if (auth.expiresAt <= current) this.authSessions.delete(token);
-    }
+    this.authSessionStore.cleanup();
   }
 
   private backoff(): number {
@@ -1430,7 +1618,7 @@ class QrLoginServiceImpl implements QrLoginService {
 
   private authFor(token?: string): AuthSession | null {
     this.cleanup();
-    return token ? (this.authSessions.get(token) ?? null) : null;
+    return token ? this.authSessionStore.get(token) : null;
   }
 
   /**
@@ -1514,7 +1702,7 @@ class QrLoginServiceImpl implements QrLoginService {
     if (session.channel === 'wechat')
       credential = await validateWechatCredential(this.http, this.deviceStore.get(), credential);
     const token = this.random(32).toString('hex');
-    this.authSessions.set(token, {
+    this.authSessionStore.set({
       token,
       credential,
       device: this.deviceStore.get(),
@@ -1725,8 +1913,12 @@ class QrLoginServiceImpl implements QrLoginService {
     return auth ? getAuthenticatedPlayUrls(this.http, auth, songmid, quality, mediaId) : null;
   }
 
+  public configureAuthSessionRepository(repository: AuthSessionRepository): void {
+    this.authSessionStore.useRepository(repository);
+  }
+
   public logout(token?: string): void {
-    if (token) this.authSessions.delete(token);
+    if (token) this.authSessionStore.delete(token);
     for (const session of this.qrSessions.values()) session.listener?.close();
     this.qrSessions.clear();
   }
@@ -1736,5 +1928,14 @@ export const createQrLoginService = (dependencies: QrLoginDependencies = {}): Qr
   new QrLoginServiceImpl(dependencies);
 
 export const qrLoginService = createQrLoginService();
+
+/**
+ * Runtime hook for embedding hosts. Folia calls this immediately after loading the npm package,
+ * before the event loop can accept a request, so the singleton used by every controller sees the
+ * restored encrypted sessions without exposing credentials through the HTTP surface.
+ */
+export const configureAuthSessionRepository = (repository: AuthSessionRepository): void => {
+  qrLoginService.configureAuthSessionRepository(repository);
+};
 
 export default qrLoginService;

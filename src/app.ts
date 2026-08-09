@@ -173,4 +173,8 @@ export const server: Server | null = isTestEnv
       autoOpenExplorer(serverConfig.port);
     });
 
+// Embedding hosts configure credential persistence through the package root; keeping this as a
+// narrow repository hook avoids exporting the login service itself or any credential over HTTP.
+export { configureAuthSessionRepository } from './services/auth/qrLogin';
+
 export default app;

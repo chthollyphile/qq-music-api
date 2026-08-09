@@ -1277,7 +1277,7 @@ songs: [
 | `/user/liked-songs` | 可选 `offset`、`limit`（最大 100）、cookie | 内建「我喜欢」歌曲分页 |
 | `/user/albums` | 可选 `offset`、`limit`（最大 100，默认 20）、cookie | 收藏的专辑分页 |
 | `/getMusicPlay/:songmid` | `quality`、cookie | 使用当前扫码登录态取得播放链接 |
-| `/logout` | cookie | 清除短期内存登录态 |
+| `/logout` | cookie | 清除当前登录态，并同步删除注入仓库中的记录 |
 
 `qr/check` 成功时会设置 HttpOnly `qqmusic_session`，并在响应的 `cookie` 字段返回同一个 opaque session 值，供跨来源 transport 保存。该值不包含 QQ 音乐凭证；`musickey`、MQTT token 和 Android 装置上下文不会写入一般日志或响应。用户资料中的账号 ID 只会作为 profile 字段返回。
 
@@ -1350,7 +1350,11 @@ QIMEI 与 device session 因此跨进程重启复用（重启后日志为 `sourc
 
 日志只记录外层／内层 code、数据类型与 q16／q36 长度。不得硬读 probe 的 `test-results`，也不要记录 QIMEI、完整响应 body、QR ID、cookie、token、`musickey`、MQTT token 或 Android 装置值。
 
-`GetSession.data.session.uid` 在真实响应中可能是数字，service 会将数字或字符串正规化为内部字符串；不要恢复为只接受字符串的解析方式。所有 auth session 都只存在单进程内存，服务重启、水平扩容或请求落到另一个实例时不会共享登录态；device context 的安全重用是独立问题，不得借此持久化用户登录凭证。
+`GetSession.data.session.uid` 在真实响应中可能是数字，service 会将数字或字符串正规化为内部字符串；不要恢复为只接受字符串的解析方式。
+
+auth session 默认仍使用进程内仓库，因此普通服务重启、水平扩容或请求落到另一个实例时不会共享登录态。可信嵌入方可在加载 npm 包后立即调用 `configureAuthSessionRepository({ kind, load, save })`：仓库保存的是 opaque token 对应的完整 credential、Android device 与 `expiresAt`，必须由宿主加密，不能进入 renderer、一般 JSON 文件或日志。恢复时会重新校验全部字段并丢弃超过 24 小时 TTL 的记录；仓库读取、解密或写入失败时降级为内存行为，不阻断重新扫码。
+
+Folia 采用 Electron 主进程 `safeStorage` 加密后写入 `electron-store`；renderer 的 `localStorage` 继续只保存 opaque `qqmusic_session`。Linux 若只能使用 Electron 的 `basic_text` 后端则拒绝写入凭证，以免把 `musickey` 伪装成“已加密”状态。
 
 #### 容器部署下的运行时约定
 
