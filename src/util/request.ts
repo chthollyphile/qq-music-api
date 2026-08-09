@@ -5,11 +5,18 @@ import { summarizeValue } from './observability';
 
 require('../util/colors');
 
-// `withCredentials` 表示跨域请求时是否需要使用凭证
-axios.defaults.withCredentials = requestConfig.withCredentials;
-axios.defaults.timeout = requestConfig.timeout;
-axios.defaults.headers.post['Content-Type'] = requestConfig.contentType;
-axios.defaults.responseType = requestConfig.responseType as ResponseType;
+// Keep the legacy QQ request defaults on a package-private client. This module is also
+// loaded when the npm package is embedded in a larger Electron or Node process, where the
+// top-level axios module is shared with unrelated SDKs. Mutating `axios.defaults` here would
+// therefore make those SDKs' request serialization depend on module import order.
+const qqMusicHttpClient = axios.create({
+  withCredentials: requestConfig.withCredentials,
+  timeout: requestConfig.timeout,
+  responseType: requestConfig.responseType as ResponseType,
+});
+
+// Preserve the existing legacy behavior for POST requests without leaking it to the host.
+qqMusicHttpClient.defaults.headers.post['Content-Type'] = requestConfig.contentType;
 
 function request<T = unknown>(
   url: string,
@@ -47,7 +54,7 @@ function request<T = unknown>(
     params: summarizeValue(options.params),
   });
 
-  return axios(requestConfigOptions).then(
+  return qqMusicHttpClient(requestConfigOptions).then(
     (response: AxiosResponse<T>) => {
       if (!response) {
         throw Error('response is null');

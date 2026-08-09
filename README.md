@@ -271,9 +271,9 @@ docker pull qq-music-api
 
 2026-08-04 已完成一次正式 service 的真实扫码验收：`801 waiting → 802 scanned → credential exchange → 803 confirmed`，随后 `GetLoginUserInfo` 返回 HTTP 200 / code 0。实测 QIMEI 外层 `data` 仍是 JSON 字符串，解析后 `q16` / `q36` 均存在；同日修复了 `GetSession.data.session.uid` 可能为数字而不是字符串的兼容问题。
 
-2026-08-05 的 G3 复验中，正式 service 重启后收到 HTTP 200、outer code `-30002`、outer data `undefined`，而同环境的独立 probe（稳定装置与 fresh device 皆然）都能取得 outer／inner code 0 和长度 36 的 q16／q36。**根因已定位并修复**：`src/util/request.ts` 在 import 时改写全局 `axios.defaults`（POST `Content-Type` 改成 `application/x-www-form-urlencoded;charset=UTF-8;text/plain;`），而 `axios.create()` 会在调用当下快照这些默认值。在 Koa server 内，import 顺序决定 auth client 是在该模块之前还是之后建立；之后建立时 QIMEI 的 JSON body 就被标成 form-urlencoded，上游随即返回 `-30002` 且没有 `data`。独立 probe 从不 import 该模块，所以一直成功。这也解释了为什么重启无效、以及为什么 2026-08-04 能通过而次日不能。
+2026-08-05 的 G3 复验中，正式 service 重启后收到 HTTP 200、outer code `-30002`、outer data `undefined`，而同环境的独立 probe（稳定装置与 fresh device 皆然）都能取得 outer／inner code 0 和长度 36 的 q16／q36。**根因已定位并修复**：`src/util/request.ts` 当时在 import 阶段改写全局 `axios.defaults`（POST `Content-Type` 改成 `application/x-www-form-urlencoded;charset=UTF-8;text/plain;`），而 `axios.create()` 会在调用当下快照这些默认值。在 Koa server 内，import 顺序决定 auth client 是在该模块之前还是之后建立；之后建立时 QIMEI 的 JSON body 就被标成 form-urlencoded，上游随即返回 `-30002` 且没有 `data`。独立 probe 从不 import 该模块，所以一直成功。这也解释了为什么重启无效、以及为什么 2026-08-04 能通过而次日不能。
 
-修复落在 auth 这一侧（不改共用的 `src/util/request.ts`）：`services/auth/httpClient.ts` 现在每次请求都自行钉住 `Content-Type: application/json`（仅在带 body 时）与 `responseType: 'json'`，不再继承全局默认值。`-30002` 仍然只作为安全数字码保留，不赋予官方错误名称。
+最初的修复落在 auth 一侧：`services/auth/httpClient.ts` 每次请求都自行钉住 `Content-Type: application/json`（仅在带 body 时）与 `responseType: 'json'`，避免继承宿主默认值。针对 npm 包嵌入 Electron 或 Node 宿主的场景，`src/util/request.ts` 现在也使用包私有 Axios 实例保存旧版 QQ 请求默认值；导入本包不再改写宿主共享的 `axios.defaults`。`-30002` 仍然只作为安全数字码保留，不赋予官方错误名称。
 
 同时新增 `services/auth/deviceContext.ts`：可注入、可测试且可配置存储位置的 Android device context repository。默认写入 `.auth-state/qq-device.json`（权限 0600，已 gitignore），可用 `QQ_AUTH_STATE_PATH` 指定其他路径，或设为 `memory` 关闭持久化；写盘失败会降级为进程内上下文而不阻断登录。QIMEI 与 device session 因此可以跨进程重启复用，不必每次启动都重新注册装置。存储内容只有装置识别值，**不包含 `musickey`、MQTT token 或任何用户凭证**；多实例部署请各自指定 `QQ_AUTH_STATE_PATH`，不要共用同一份装置身份。
 

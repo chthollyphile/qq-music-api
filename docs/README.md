@@ -1317,7 +1317,7 @@ songs: [
 
 2026-08-05 的 G3 复验中，正式 service 重启后收到 HTTP 200、outer code `-30002`、outer data `undefined`；而同环境的独立 probe（稳定装置与 fresh device）以及 production／probe request builder 与 HTTP client 的 2×2 交叉验证，全部取得 outer／inner code 0 与长度 36 的 q16／q36。差异不在装置、不在请求构造、也不在 HTTP client，而在**进程**：
 
-- `src/util/request.ts` 在 import 时改写全局 `axios.defaults`，其中 `axios.defaults.headers.post['Content-Type']` 被设为 `application/x-www-form-urlencoded;charset=UTF-8;text/plain;`（供既有 y.qq.com／c.y.qq.com service 使用）。
+- `src/util/request.ts` 当时在 import 阶段改写全局 `axios.defaults`，其中 `axios.defaults.headers.post['Content-Type']` 被设为 `application/x-www-form-urlencoded;charset=UTF-8;text/plain;`（供既有 y.qq.com／c.y.qq.com service 使用）。
 - `createAuthHttpClient()` 内部的 `axios.create()` 会在**调用当下**快照全局默认值。
 - 于是 auth client 是在该模块之前还是之后建立，纯粹由 `src/app.ts` 的 import 图决定。之后建立时，QIMEI 的 JSON body 被声明为 form-urlencoded，上游返回 HTTP 200、outer code `-30002` 且没有 `data`。
 
@@ -1330,7 +1330,7 @@ songs: [
 
 这解释了独立 probe 为何总是成功（它从不 import `src/util/request.ts`）、为何重启无效（import 顺序是确定的）、以及为何 2026-08-04 通过而次日不通过（import 图变了）。
 
-**修复在 auth 这一侧**，不改共用的 `src/util/request.ts`：`services/auth/httpClient.ts` 每次请求都自行钉住 `Content-Type: application/json`（仅在带 body 时）与 `responseType: 'json'`，不再继承全局默认值。回归测试 `tests/services.auth-http-client.test.ts` 用 loopback echo server 守住这一点。`-30002` 仍只作为安全数字码保留，不赋予官方错误名称。
+最初的修复在 auth 一侧：`services/auth/httpClient.ts` 每次请求都自行钉住 `Content-Type: application/json`（仅在带 body 时）与 `responseType: 'json'`，不再继承宿主默认值。针对 npm 包嵌入 Electron 或 Node 宿主的场景，`src/util/request.ts` 现在也使用包私有 Axios 实例保存旧版 QQ 请求默认值，导入本包不再改写宿主共享的 `axios.defaults`。`tests/services.auth-http-client.test.ts` 与 `tests/util.request.test.ts` 分别用 loopback echo server 验证 auth 请求契约和 legacy 请求隔离。`-30002` 仍只作为安全数字码保留，不赋予官方错误名称。
 
 #### Android device context 与建立 session 前的退避
 
