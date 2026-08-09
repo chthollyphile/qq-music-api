@@ -9,18 +9,22 @@
 
 ![GitHub repo size](https\://img.shields.io/github/repo-size/rain120/qq-music-api?style=flat-square) ![GitHub package.json version](https\://img.shields.io/github/package-json/v/rain120/qq-music-api?style=flat-square) ![GitHub](https\://img.shields.io/github/license/rain120/qq-music-api?style=flat-square) ![GitHub open issues](https\://img.shields.io/github/issues/rain120/qq-music-api?style=flat-square) ![GitHub closed issues](https\://img.shields.io/github/issues-closed/rain120/qq-music-api) ![GitHub last commit](https\://img.shields.io/github/last-commit/rain120/qq-music-api?style=flat-square) ![GitHub top language](https\://img.shields.io/github/languages/top/rain120/qq-music-api?style=flat-square)
 
+[![CI](https://github.com/yakult-green-tea/qq-music-api/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/yakult-green-tea/qq-music-api/actions/workflows/ci.yml)
+
 </div>
 
 > QQ 音乐 API，基于 `Koa2 + TypeScript` 构建，通过 Web 端请求 QQ 音乐接口数据。本项目集成了自动化数据处理代理，提供高效、易用的接口服务。
-> 有问题请提 [issue](https://github.com/Rain120/qq-music-api/issues)。欢迎阅读 [参与贡献指南](./CONTRIBUTING.md) 参与项目开发，并查阅 [AI 代理指南](./AGENTS.md) 了解自动化机制。
+> 有问题请提 [issue](https://github.com/yakult-green-tea/qq-music-api/issues)。欢迎阅读 [参与贡献指南](./CONTRIBUTING.md) 参与项目开发，并查阅 [AI 代理指南](./AGENTS.md) 了解自动化机制。
 > 当前主干分支已完成 TypeScript 化改造，核心源码、测试与构建链路均已切换到 TypeScript 体系。
-> TypeScript 版本请使用 `next` 分支，JavaScript 版本请使用 `main` 分支。
+> `main` 是当前维护版本的主分支。
 
-> ⚠️ 当前代码仅供学习，不可做商业用途。
+> ⚠️ 本项目为非官方、社区维护的 QQ 音乐 API 实现，与腾讯、QQ 音乐不存在隶属、授权或合作关系。
+> 本项目主要用于技术研究、学习与兼容性开发。使用者应自行确保其使用方式符合所在地法律、平台条款以及相关内容授权要求。
+> 软件本身按照 [MIT License](./LICENSE) 提供；上述说明不构成对 MIT License 已授予权利的额外限制。
 
 ### 关于本 fork
 
-本包是 [Rain120/qq-music-api](https://github.com/Rain120/qq-music-api) 的修改版，以 `@yakult-green-tea/qq-music-api` 的名义发布到 npm，沿用原项目的 MIT 许可（`LICENSE` 保留原作者的著作权声明，未作改动）。
+本包是 [Rain120/qq-music-api](https://github.com/Rain120/qq-music-api) 的修改版，以 `@yakult-green-tea/qq-music-api` 的名义发布到 npm，沿用原项目的 MIT 许可。上游来源、当前维护者与许可证保留说明见 [ATTRIBUTION.md](./ATTRIBUTION.md)；`LICENSE` 原文未作改动。
 
 相对上游的差异：
 
@@ -325,7 +329,7 @@ docker pull qq-music-api
 
 我们非常欢迎并感激所有的贡献！无论是提交 Bug、改进文档还是新增功能，您的支持对项目发展至关重要。
 
-详细的贡献流程、代码提交规范以及本地开发配置，请仔细阅读我们的 **[参与贡献指南 (CONTRIBUTING.md)](./CONTRIBUTING.md)**。您可以通过提交 [Pull Requests](https://github.com/Rain120/qq-music-api/pulls) 或发布 [Issue](https://github.com/Rain120/qq-music-api/issues) 来参与共建。
+详细的贡献流程、代码提交规范以及本地开发配置，请仔细阅读我们的 **[参与贡献指南 (CONTRIBUTING.md)](./CONTRIBUTING.md)**。您可以通过提交 [Pull Requests](https://github.com/yakult-green-tea/qq-music-api/pulls) 或发布 [Issue](https://github.com/yakult-green-tea/qq-music-api/issues) 来参与共建。
 
 #### 👨‍🏭 作者
 
@@ -337,6 +341,4 @@ docker pull qq-music-api
 
 #### 📝 License
 
-[MIT](https://github.com/Rain120/qq-music-api/blob/master/LICENSE)
-
-Copyright © 2019-present [Rain120](https://github.com/Rain120).
+本软件按仓库中的 [MIT License](./LICENSE) 提供。原项目、当前维护者与贡献历史说明见 [ATTRIBUTION.md](./ATTRIBUTION.md)。

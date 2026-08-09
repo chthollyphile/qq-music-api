@@ -3,8 +3,8 @@
 
 > QQ音乐API koa2实现版本
 
-* 当前代码仅共学习，不可做商业用途
-* 希望大家一起学习，有大佬愿意带我就更好了
+* 非官方、社区维护的 QQ 音乐 API 实现
+* 使用者应遵守所在地法律、平台条款与相关内容授权要求；软件本身按 MIT License 提供
 
-[GitHub](https://github.com/rain120/qq-music-api)
+[GitHub](https://github.com/yakult-green-tea/qq-music-api)
 [Get Started](#qqmusicapi)
