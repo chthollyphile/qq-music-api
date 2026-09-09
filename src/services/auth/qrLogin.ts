@@ -16,6 +16,7 @@ import {
   type DeviceContextStore,
 } from './deviceContextStore';
 import type { AuthHttpClient } from './httpClient';
+import { createStreamUrlProbe, StreamCdnSelector, type StreamUrlProbe } from './streamCdnSelector';
 import {
   type Dictionary,
   dictionaryOf,
@@ -259,6 +260,7 @@ export interface SessionResolver {
 
 interface QrLoginDependencies {
   http?: AuthHttpClient;
+  streamUrlProbe?: StreamUrlProbe;
   /** Builds the per-QR-session client used by the web login channels. */
   createSessionHttp?: () => AuthHttpClient;
   deviceRepository?: DeviceContextRepository;
@@ -762,10 +764,11 @@ export class QqProtocolError extends Error {
 /**
  * `music.vkey.GetVkey/UrlGetVkey` answers with `midurlinfo` but an empty `sip`, unlike the legacy
  * web `CgiGetVkey`. Without a fallback the play URL degrades into a bare filename, which the
- * browser then resolves against its own origin. Measured 2026-08-06 against a real vkey: only
- * `dl.stream` serves it (HTTP 206 `audio/mpeg`); `isure.stream` and `ws.stream` answer 403.
+ * browser then resolves against its own origin. The stream fallback remains the last resort after
+ * asking QQ's CDN dispatcher for region-appropriate domains and probing them with the signed URL.
  */
 const DEFAULT_STREAM_DOMAIN = 'http://dl.stream.qqmusic.qq.com/';
+const DEFAULT_CDN_REFRESH_MS = 30 * 60 * 1_000;
 
 const MUSIC_FILE_TYPES = {
   m4a: { prefix: 'C400', extension: '.m4a' },
@@ -778,6 +781,7 @@ const MUSIC_FILE_TYPES = {
 const getAuthenticatedPlayUrls = async (
   http: AuthHttpClient,
   auth: AuthSession,
+  streamCdnSelector: StreamCdnSelector,
   songmid: string,
   quality: string | number = 128,
   mediaId?: string,
@@ -814,8 +818,47 @@ const getAuthenticatedPlayUrls = async (
     auth.credential,
   );
   const sip = Array.isArray(data.sip) ? data.sip.map(stringOf).filter(Boolean) : [];
-  const domain =
-    sip.find((value) => !value.startsWith('http://ws')) ?? sip[0] ?? DEFAULT_STREAM_DOMAIN;
+  let domain: string | undefined = sip.find((value) => !value.startsWith('http://ws')) ?? sip[0];
+  if (!domain) {
+    const firstPurl = (Array.isArray(data.midurlinfo) ? data.midurlinfo : [])
+      .map(dictionaryOf)
+      .map((item) => stringOf(item.purl))
+      .find(Boolean);
+    if (firstPurl) {
+      try {
+        const dispatch = await callMusicu(
+          http,
+          auth.device,
+          'get-cdn-dispatch',
+          'music.audioCdnDispatch.cdnDispatch',
+          'GetCdnDispatch',
+          {
+            guid,
+            uid: '0',
+            use_new_domain: 1,
+            use_ipv6: 1,
+          },
+          auth.credential,
+        );
+        const dispatchSip = Array.isArray(dispatch.sip)
+          ? dispatch.sip.map(stringOf).filter(Boolean)
+          : [];
+        const refreshMs =
+          (numberOf(dispatch.refreshTime) ?? DEFAULT_CDN_REFRESH_MS / 1_000) * 1_000;
+        domain =
+          (await streamCdnSelector.select(
+            [...dispatchSip, DEFAULT_STREAM_DOMAIN],
+            firstPurl,
+            refreshMs,
+          )) ?? undefined;
+      } catch (error) {
+        logger.warn('qq-auth.cdn-dispatch-failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  }
+  domain ??= DEFAULT_STREAM_DOMAIN;
   const playUrl: Dictionary = {};
   const entries = Array.isArray(data.midurlinfo) ? data.midurlinfo : [];
   for (const entry of entries) {
@@ -1946,6 +1989,7 @@ type QrListenerFactory = (
 
 class QrLoginServiceImpl implements QrLoginService {
   private readonly http: AuthHttpClient;
+  private readonly streamCdnSelector: StreamCdnSelector;
   private readonly createSessionHttp: () => AuthHttpClient;
   private readonly now: () => number;
   private readonly random: (size: number) => Buffer;
@@ -1962,6 +2006,10 @@ class QrLoginServiceImpl implements QrLoginService {
 
   public constructor(dependencies: QrLoginDependencies) {
     this.http = dependencies.http ?? unavailableHttpClient();
+    this.streamCdnSelector = new StreamCdnSelector(
+      dependencies.streamUrlProbe ?? createStreamUrlProbe(this.http),
+      dependencies.now ?? Date.now,
+    );
     this.createSessionHttp = dependencies.createSessionHttp ?? unavailableHttpClient;
     this.now = dependencies.now ?? Date.now;
     this.random = dependencies.randomBytes ?? randomBytesNeutral;
@@ -2402,7 +2450,14 @@ class QrLoginServiceImpl implements QrLoginService {
     const auth = await this.authFor(token);
     return auth
       ? withCredentialRejectionMapped(() =>
-          getAuthenticatedPlayUrls(this.http, auth, songmid, quality, mediaId),
+          getAuthenticatedPlayUrls(
+            this.http,
+            auth,
+            this.streamCdnSelector,
+            songmid,
+            quality,
+            mediaId,
+          ),
         )
       : null;
   }
