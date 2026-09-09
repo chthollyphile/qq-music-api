@@ -16,6 +16,7 @@ import {
   type QrLoginService,
   QrLoginServiceError,
 } from '../src/services/auth/qrLogin';
+import type { StreamUrlProbe } from '../src/services/auth/streamCdnSelector';
 import { AuthCredentialRejectedError } from '../src/util/authError';
 import { logger } from '../src/util/logger';
 
@@ -62,6 +63,8 @@ interface HarnessOptions {
   qimei?: () => AxiosResponse<unknown>;
   /** Reproduces the Android `UrlGetVkey` response, which carries `midurlinfo` but no `sip`. */
   emptyVkeySip?: boolean;
+  dispatchSips?: string[];
+  streamUrlProbe?: StreamUrlProbe;
   /**
    * Reproduces the measured `GetLoginUserInfo` shape: no account id at all, every account field
    * nested under `info`. The convenience fixture above is not what the real endpoint answers.
@@ -320,6 +323,15 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
           },
         } as T);
       }
+      if (method === 'GetCdnDispatch') {
+        return response({
+          code: 0,
+          req_0: {
+            code: 0,
+            data: { sip: options.dispatchSips ?? [], refreshTime: 1_800 },
+          },
+        } as T);
+      }
       throw new Error(`Unexpected method: ${method}`);
     },
   );
@@ -373,6 +385,7 @@ const createProtocolHarness = (options: HarnessOptions = {}) => {
   const wechat = createWechatHttpStub(options);
   const service = createQrLoginService({
     http,
+    streamUrlProbe: options.streamUrlProbe,
     deviceRepository,
     authSessionRepository: options.authSessionRepository,
     createSessionHttp: () => wechat.client,
@@ -642,6 +655,45 @@ describe('QQ native QR login service', () => {
       harness.service.getMusicPlay(token, 'song-mid', 'flac', 'media-mid'),
     ).resolves.toEqual({
       'song-mid': { url: 'http://dl.stream.qqmusic.qq.com/fixture.flac', error: false },
+    });
+    expect(harness.calls).toContain('GetCdnDispatch');
+  });
+
+  it('should dispatch and select the fastest compatible CDN when the vkey response has no sip', async () => {
+    const streamUrlProbe = jest.fn(async (url: string) => {
+      if (url.startsWith('https://fast.stream.qqmusic.qq.com/'))
+        return { bytes: 262_144, elapsedMs: 100 };
+      if (url.startsWith('http://dl.stream.qqmusic.qq.com/'))
+        return { bytes: 262_144, elapsedMs: 1_000 };
+      return null;
+    });
+    const harness = createProtocolHarness({
+      emptyVkeySip: true,
+      dispatchSips: [
+        'https://blocked.stream.qqmusic.qq.com/',
+        'https://fast.stream.qqmusic.qq.com/',
+      ],
+      streamUrlProbe,
+    });
+    const { result } = await login(harness.service, harness.emit);
+    const token = result.cookie?.split('=')[1];
+
+    await expect(
+      harness.service.getMusicPlay(token, 'song-mid', 'flac', 'media-mid'),
+    ).resolves.toEqual({
+      'song-mid': {
+        url: 'https://fast.stream.qqmusic.qq.com/fixture.flac',
+        error: false,
+      },
+    });
+    expect(streamUrlProbe).toHaveBeenCalledTimes(3);
+    const dispatchCall = jest
+      .mocked(harness.httpPost)
+      .mock.calls.find(([, payload]) => methodOf(payload) === 'GetCdnDispatch');
+    expect(dictionaryOf(dictionaryOf(dictionaryOf(dispatchCall?.[1]).req_0).param)).toMatchObject({
+      uid: '0',
+      use_new_domain: 1,
+      use_ipv6: 1,
     });
   });
 
