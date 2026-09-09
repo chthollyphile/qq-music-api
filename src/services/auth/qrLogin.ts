@@ -765,10 +765,20 @@ export class QqProtocolError extends Error {
  * `music.vkey.GetVkey/UrlGetVkey` answers with `midurlinfo` but an empty `sip`, unlike the legacy
  * web `CgiGetVkey`. Without a fallback the play URL degrades into a bare filename, which the
  * browser then resolves against its own origin. The stream fallback remains the last resort after
- * asking QQ's CDN dispatcher for region-appropriate domains and probing them with the signed URL.
+ * probing the known responsive route first, then asking QQ's CDN dispatcher for alternatives.
  */
 const DEFAULT_STREAM_DOMAIN = 'http://dl.stream.qqmusic.qq.com/';
+const PREFERRED_STREAM_DOMAIN = 'http://sjy6.stream.qqmusic.qq.com/';
+const PREFERRED_STREAM_HOST = new URL(PREFERRED_STREAM_DOMAIN).hostname;
 const DEFAULT_CDN_REFRESH_MS = 30 * 60 * 1_000;
+
+const isPreferredStreamDomain = (value: string): boolean => {
+  try {
+    return new URL(value).hostname.toLowerCase() === PREFERRED_STREAM_HOST;
+  } catch {
+    return false;
+  }
+};
 
 const MUSIC_FILE_TYPES = {
   m4a: { prefix: 'C400', extension: '.m4a' },
@@ -826,33 +836,40 @@ const getAuthenticatedPlayUrls = async (
       .find(Boolean);
     if (firstPurl) {
       try {
-        const dispatch = await callMusicu(
-          http,
-          auth.device,
-          'get-cdn-dispatch',
-          'music.audioCdnDispatch.cdnDispatch',
-          'GetCdnDispatch',
-          {
-            guid,
-            uid: '0',
-            use_new_domain: 1,
-            use_ipv6: 1,
-          },
-          auth.credential,
-        );
-        const dispatchSip = Array.isArray(dispatch.sip)
-          ? dispatch.sip.map(stringOf).filter(Boolean)
-          : [];
-        const refreshMs =
-          (numberOf(dispatch.refreshTime) ?? DEFAULT_CDN_REFRESH_MS / 1_000) * 1_000;
+        // sjy6 is the responsive compatible route observed across authenticated playback. Trying
+        // it first keeps the common Serverless path to one Range request instead of dispatch + N.
         domain =
-          (await streamCdnSelector.select(
-            [...dispatchSip, DEFAULT_STREAM_DOMAIN],
-            firstPurl,
-            refreshMs,
-          )) ?? undefined;
+          (await streamCdnSelector.select([PREFERRED_STREAM_DOMAIN], firstPurl)) ?? undefined;
+        if (!domain) {
+          const dispatch = await callMusicu(
+            http,
+            auth.device,
+            'get-cdn-dispatch',
+            'music.audioCdnDispatch.cdnDispatch',
+            'GetCdnDispatch',
+            {
+              guid,
+              uid: '0',
+              use_new_domain: 1,
+              use_ipv6: 1,
+            },
+            auth.credential,
+          );
+          const dispatchSip = Array.isArray(dispatch.sip)
+            ? dispatch.sip.map(stringOf).filter(Boolean)
+            : [];
+          const alternativeSip = dispatchSip.filter((value) => !isPreferredStreamDomain(value));
+          const refreshMs =
+            (numberOf(dispatch.refreshTime) ?? DEFAULT_CDN_REFRESH_MS / 1_000) * 1_000;
+          domain =
+            (await streamCdnSelector.select(
+              [...alternativeSip, DEFAULT_STREAM_DOMAIN],
+              firstPurl,
+              refreshMs,
+            )) ?? undefined;
+        }
       } catch (error) {
-        logger.warn('qq-auth.cdn-dispatch-failed', {
+        logger.warn('qq-auth.cdn-selection-failed', {
           error: error instanceof Error ? error.message : String(error),
         });
       }

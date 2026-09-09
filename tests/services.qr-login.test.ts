@@ -659,7 +659,29 @@ describe('QQ native QR login service', () => {
     expect(harness.calls).toContain('GetCdnDispatch');
   });
 
-  it('should dispatch and select the fastest compatible CDN when the vkey response has no sip', async () => {
+  it('should use sjy6 without dispatch when the preferred CDN accepts the signed URL', async () => {
+    const streamUrlProbe = jest.fn(async (url: string) =>
+      url.startsWith('http://sjy6.stream.qqmusic.qq.com/')
+        ? { bytes: 262_144, elapsedMs: 100 }
+        : null,
+    );
+    const harness = createProtocolHarness({ emptyVkeySip: true, streamUrlProbe });
+    const { result } = await login(harness.service, harness.emit);
+    const token = result.cookie?.split('=')[1];
+
+    await expect(
+      harness.service.getMusicPlay(token, 'song-mid', 'flac', 'media-mid'),
+    ).resolves.toEqual({
+      'song-mid': {
+        url: 'http://sjy6.stream.qqmusic.qq.com/fixture.flac',
+        error: false,
+      },
+    });
+    expect(streamUrlProbe).toHaveBeenCalledTimes(1);
+    expect(harness.calls).not.toContain('GetCdnDispatch');
+  });
+
+  it('should dispatch and select the fastest compatible CDN when sjy6 rejects the signed URL', async () => {
     const streamUrlProbe = jest.fn(async (url: string) => {
       if (url.startsWith('https://fast.stream.qqmusic.qq.com/'))
         return { bytes: 262_144, elapsedMs: 100 };
@@ -670,6 +692,7 @@ describe('QQ native QR login service', () => {
     const harness = createProtocolHarness({
       emptyVkeySip: true,
       dispatchSips: [
+        'https://sjy6.stream.qqmusic.qq.com/',
         'https://blocked.stream.qqmusic.qq.com/',
         'https://fast.stream.qqmusic.qq.com/',
       ],
@@ -686,7 +709,14 @@ describe('QQ native QR login service', () => {
         error: false,
       },
     });
-    expect(streamUrlProbe).toHaveBeenCalledTimes(3);
+    expect(streamUrlProbe).toHaveBeenCalledTimes(4);
+    expect(streamUrlProbe).toHaveBeenNthCalledWith(
+      1,
+      'http://sjy6.stream.qqmusic.qq.com/fixture.flac',
+    );
+    expect(
+      streamUrlProbe.mock.calls.filter(([url]) => url.includes('sjy6.stream.qqmusic.qq.com')),
+    ).toHaveLength(1);
     const dispatchCall = jest
       .mocked(harness.httpPost)
       .mock.calls.find(([, payload]) => methodOf(payload) === 'GetCdnDispatch');
