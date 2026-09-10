@@ -1287,6 +1287,10 @@ songs: [
 
 登录态播放沿用 auth 专用 `createAuthHttpClient` 调用 `musicu.fcg`，不会自行建立 axios client，也不会依赖或修改共用 `src/util/request.ts` 的全局 defaults。
 
+自 `3.1.1` 起，Android `UrlGetVkey` 返回有效 `purl` 但没有 `sip` 时，服务会先用 256 KiB Range 请求探测 `sjy6.stream.qqmusic.qq.com`；若该节点不接受当前签名 URL，再调用 `GetCdnDispatch`，并行测量调度结果与 `dl.stream.qqmusic.qq.com`，选择实际可响应且吞吐较好的节点。若探测或调度异常，最终仍使用默认节点，避免把裸 `purl` 交给浏览器当成本服务的相对路径。
+
+选中的节点只缓存在当前 `QrLoginService` 实例中，生命周期不会跨进程重启；缓存时间采用调度响应的 `refreshTime`，并限制在 1 分钟到 24 小时之间。缓存只在新的候选列表仍包含该节点时复用，不缓存 vkey、`purl` 或完整签名 URL。单实例、单用户、一次只发起一个播放请求的部署不会产生跨请求并发选路；缓存的主要代价是节点状态在有效期内可能变化，此时会等到缓存过期或候选列表改变后重新测速。
+
 服务只允许一个并行 QR。上游拒绝（包括安全数字码 `50006`）会保留为 `upstreamCode`，并返回 `retryAfterMs` / `Retry-After`，调用方应等待后重新出码。
 
 #### 实际验收与故障诊断
