@@ -2,6 +2,12 @@
 
 暂无。
 
+## [3.1.1](https://github.com/yakult-green-tea/qq-music-api/compare/v3.1.0...v3.1.1) (2026-09-10)
+
+### 问题修复
+
+- 当 Android `UrlGetVkey` 未返回 CDN 地址时，优先探测可用的高速节点，并在失败时动态调度其他节点，改善高码率音频播放卡顿。
+
 ## [3.1.0](https://github.com/yakult-green-tea/qq-music-api/compare/v3.0.0...v3.1.0) (2026-08-25)
 
 ### 新功能
